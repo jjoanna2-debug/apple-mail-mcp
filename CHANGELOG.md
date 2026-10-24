@@ -20,6 +20,12 @@
 - Clarify account-label routing and quoted-body limitations in the tool
   description and bundled Apple Mail skill for Codex and other hosts.
 
+### Documentation
+
+- README Tool Reference: document `send-serial-email`'s new `transport` parameter
+  and returned `transport`, and `send-email`'s account-label routing and
+  explicit-SMTP label rejection (#329).
+
 ## [2.20.29] - 2026-10-24
 ### Security
 - **Upgrade Zod to `^4.6.6`** to address GHSA-mrhx-c7xc-m3w5. Preserve the
