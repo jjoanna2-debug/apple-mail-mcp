@@ -1,5 +1,16 @@
 ## [Unreleased]
 
+## [2.20.30] - October 24, 2026
+### Fixed
+- Stop mail merge before sending when selected SMTP credentials or configuration
+  cannot be resolved, instead of silently switching to Mail.app. Report the
+  selected transport in attempted-batch results, including complete failures.
+- Clarify account-label routing and quoted-body limitations in the tool
+  description and bundled Apple Mail skill for Codex and other hosts.
+### Documentation
+- Add Codex setup and quoted-body troubleshooting guidance, plus a proposal for
+  equivalent Codex/Claude delivery validation and optional provider OAuth.
+
 ## [2.20.29] - 2026-10-24
 ### Security
 - **Upgrade Zod to `^4.6.6`** to address GHSA-mrhx-c7xc-m3w5. Preserve the
