@@ -48,7 +48,7 @@ HTTP MCP connections, not the local server's downstream mailbox connections.
 
 Compose correctness remains a separate workstream. The quotation limitation is
 documented in [issue #12](https://github.com/sweetrb/apple-mail-mcp/issues/12), and
-transport corrections are tracked in [PR #329](https://github.com/sweetrb/apple-mail-mcp/pull/329).
+transport corrections shipped in 2.20.30 via [PR #329](https://github.com/sweetrb/apple-mail-mcp/pull/329).
 Adding authorization must not be presented as a fix for delivery formatting.
 
 ## First increment: guided local setup

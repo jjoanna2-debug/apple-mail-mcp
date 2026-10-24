@@ -1,7 +1,7 @@
 # Apple Mail in Codex
 
 This guide describes the existing local plugin and the capabilities available in
-`apple-mail-mcp` 2.20.29. The plugin packages the Apple Mail skill, assets, and MCP
+`apple-mail-mcp` 2.20.30. The plugin packages the Apple Mail skill, assets, and MCP
 configuration. It launches an exactly pinned npm release through `npx`; it does
 not install Node.js, add mail accounts, or provide mailbox-provider OAuth.
 
@@ -73,9 +73,9 @@ substituting another account.
 The Mail.app AppleScript path has a documented macOS 15+ limitation that can
 wrap newly authored text in quotation markup. See
 [issue #12](https://github.com/sweetrb/apple-mail-mcp/issues/12) for the direct-SMTP
-workaround and [PR #329](https://github.com/sweetrb/apple-mail-mcp/pull/329) for
-separate compose and transport corrections. This guide does not include those
-proposed corrections or claim that native delivery is fixed.
+workaround. [PR #329](https://github.com/sweetrb/apple-mail-mcp/pull/329) (2.20.30)
+made explicit SMTP fail closed instead of falling back to Mail.app; it does not
+fix native delivery, and this guide does not claim otherwise.
 
 SMTP configuration alone does not prove that a particular operation used SMTP.
 A native draft is also not a delivery-format workaround. Check the operation's
