@@ -24,10 +24,10 @@ The next step here is to extend the existing plugin's setup experience.
 
 ## Codex compose parity: current recurring issue
 
-The contributor reports that Codex's Apple Mail skill repeatedly sends newly
-authored email text as quoted blocks. Treat this as an unresolved Codex workflow
-report until an actual delivery test establishes the cause and verifies the
-result. The accompanying code change removes a verified mail-merge fallback,
+I repeatedly see newly authored email arrive as quoted blocks when I compose
+through Codex's Apple Mail skill. The cause remains unresolved until an actual
+delivery test traces the selected transport and verifies the received message.
+The accompanying code change removes a verified mail-merge fallback,
 but does not establish that the native Mail.app formatting issue is fixed.
 
 There is a documented underlying limitation: Mail.app's AppleScript send path on
@@ -42,7 +42,7 @@ returns `false`: an account label selects Mail.app when transport is omitted.
 Explicit SMTP uses the configured SMTP identity, not a provider chosen from that
 label. Native draft creation also remains separate from direct SMTP delivery.
 These verified code paths identify cases to test; they do not prove which path
-produced the contributor's reported messages.
+produced the messages I received.
 
 Mail merge has its own verified routing bug. In 2.20.29, `send-serial-email`
 silently selected Mail.app when a chosen SMTP path failed to resolve its
