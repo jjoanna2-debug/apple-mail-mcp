@@ -94,6 +94,97 @@ describe("mail-merge transport selection", () => {
     expect(deps.smtpSend).not.toHaveBeenCalled();
   });
 
+  it("honors explicit AppleScript even when SMTP is configured", async () => {
+    const deps = fixture();
+
+    const response = await createSerialEmailHandler(deps)({
+      ...args,
+      transport: "applescript",
+    });
+
+    expect(response.structuredContent).toMatchObject({ ok: true, transport: "applescript" });
+    expect(deps.appleScriptSend).toHaveBeenCalledOnce();
+    expect(deps.smtpConfig).not.toHaveBeenCalled();
+    expect(deps.smtpSend).not.toHaveBeenCalled();
+  });
+
+  it("resolves an explicitly selected SMTP path even when auto-detection is false", async () => {
+    const deps = fixture();
+    deps.smtpConfigured.mockReturnValue(false);
+
+    const response = await createSerialEmailHandler(deps)({ ...args, transport: "smtp" });
+
+    expect(response.structuredContent).toMatchObject({ ok: true, transport: "smtp" });
+    expect(deps.smtpSend).toHaveBeenCalledOnce();
+    expect(deps.appleScriptSend).not.toHaveBeenCalled();
+  });
+
+  it("does not send natively when explicit SMTP is unavailable", async () => {
+    const deps = fixture();
+    deps.smtpConfigured.mockReturnValue(false);
+    deps.smtpConfig.mockImplementation(() => {
+      throw new Error("SMTP transport is not configured");
+    });
+
+    const response = await createSerialEmailHandler(deps)({ ...args, transport: "smtp" });
+
+    expect(response.isError).toBe(true);
+    expect(response.content[0].text).toContain("SMTP transport is not configured");
+    expect(deps.smtpSend).not.toHaveBeenCalled();
+    expect(deps.appleScriptSend).not.toHaveBeenCalled();
+  });
+
+  it("rejects an explicit SMTP request with a Mail.app account label before resolving credentials", async () => {
+    const deps = fixture();
+
+    const response = await createSerialEmailHandler(deps)({
+      ...args,
+      account: "Work",
+      transport: "smtp",
+    });
+
+    expect(response.isError).toBe(true);
+    expect(response.content[0].text).toMatch(/account label.*SMTP/i);
+    expect(deps.smtpConfig).not.toHaveBeenCalled();
+    expect(deps.smtpSend).not.toHaveBeenCalled();
+    expect(deps.appleScriptSend).not.toHaveBeenCalled();
+  });
+
+  it("preserves an allowed email-form account override without changing the SMTP configuration", async () => {
+    const deps = fixture();
+    const aliasConfig = Object.freeze({ ...config, allowedFrom: ["work@example.test"] });
+    deps.smtpConfig.mockReturnValue(aliasConfig);
+
+    const response = await createSerialEmailHandler(deps)({
+      ...args,
+      account: "work@example.test",
+    });
+
+    expect(response.structuredContent).toMatchObject({ ok: true, transport: "smtp" });
+    expect(deps.smtpSend).toHaveBeenCalledWith(recipients, args.subject, args.body, aliasConfig, {
+      delayMs: 0,
+      from: "work@example.test",
+    });
+    expect(aliasConfig.from).toBe("sender@example.test");
+    expect(deps.appleScriptSend).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unapproved sender before starting any recipient in the batch", async () => {
+    const deps = fixture();
+    const batch = [...recipients, { email: "second@example.test", variables: {} }];
+
+    const response = await createSerialEmailHandler(deps)({
+      ...args,
+      recipients: batch,
+      account: "unapproved@example.test",
+    });
+
+    expect(response.isError).toBe(true);
+    expect(response.content[0].text).toContain("not a configured sender identity");
+    expect(deps.smtpSend).not.toHaveBeenCalled();
+    expect(deps.appleScriptSend).not.toHaveBeenCalled();
+  });
+
   it("does not switch transports after an SMTP submission failure", async () => {
     const deps = fixture();
     deps.smtpSend.mockRejectedValue(new Error("SMTP submission failed"));

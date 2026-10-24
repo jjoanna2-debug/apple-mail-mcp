@@ -86,7 +86,8 @@ That report has not been reproduced in a live Codex delivery test for this guide
 Configuring SMTP alone does not guarantee that every tool call uses it:
 
 - For a supported, authorized send, `transport: "smtp"` explicitly selects direct
-  SMTP for `send-email`, `reply-to-message`, or `forward-message`. Verify the
+  SMTP for `send-email`, `reply-to-message`, `forward-message`, or
+  `send-serial-email`. Verify the
   returned `transport` and the intended sender. SMTP bypasses Mail.app's wrapper;
   it does not remove quotation markers already present in the submitted text.
 - With `send-email`, omitted `transport` plus a Mail.app account label such as
@@ -98,13 +99,16 @@ Configuring SMTP alone does not guarantee that every tool call uses it:
   `send: false` on reply/forward saves a native draft; combining it with
   `transport: "smtp"` is rejected. Do not promise clean SMTP delivery for a draft
   that will later be sent through Mail.app.
-- Mail merge has a separate route: `send-serial-email` does not expose a
-  `transport` input. In 2.20.30, a selected SMTP path stops on configuration or
-  credential-resolution failure, before either backend sends. Earlier releases
-  silently switched to Mail.app in that case. Batch results now identify the
-  actual `transport`; this does not itself verify the delivered formatting.
-  SMTP being absent or a Mail.app account label being selected still deliberately
-  chooses the native path.
+- In 2.20.30, mail merge accepts explicit `transport: "smtp"` and preserves an
+  allowed email-form sender override. Explicit SMTP rejects a bare Mail.app
+  account label before sending; choose the matching configured SMTP identity or
+  an allowed email address. A selected SMTP path stops on configuration,
+  credential, or sender-validation failure before either backend sends.
+  Earlier releases silently switched to Mail.app on configuration failure and
+  ignored SMTP sender overrides. Batch results identify the actual `transport`;
+  this does not itself verify delivered formatting. With transport omitted,
+  absent SMTP configuration or a Mail.app account label still selects native
+  delivery. Explicit `transport: "applescript"` deliberately selects that path.
 
 When diagnosing this issue, inspect both the received message's raw MIME and its
 rendered body. The new text should be outside quotation markup. Quoting the

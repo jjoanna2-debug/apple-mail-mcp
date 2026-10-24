@@ -44,13 +44,16 @@ label. Native draft creation also remains separate from direct SMTP delivery.
 These verified code paths identify cases to test; they do not prove which path
 produced the contributor's reported messages.
 
-Mail merge has its own verified regression. In 2.20.29, `send-serial-email`
+Mail merge has its own verified routing bug. In 2.20.29, `send-serial-email`
 silently selected Mail.app when a chosen SMTP path failed to resolve its
 configuration or credentials. An isolated mocked-handler test reproduced that
 fallback without sending real mail. The accompanying 2.20.30 fix returns an
 error before either backend sends, preserves deliberate native selection, and
-reports the transport in attempted-batch results. It does not add a transport
-input or retry an uncertain SMTP submission.
+reports the transport in attempted-batch results. It also adds explicit
+transport selection and preserves an approved email-form sender override, which
+the previous implementation silently ignored. Explicit SMTP rejects bare
+Mail.app account labels, and sender validation completes before the first
+message is submitted. Failed SMTP submissions are not retried through Mail.app.
 
 Give the installed Codex plugin the same acceptance gate as Claude Code. Run the
 same compose scenarios through both hosts and record the selected tool,

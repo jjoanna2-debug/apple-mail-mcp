@@ -5,6 +5,12 @@
 - Stop mail merge before sending when selected SMTP credentials or configuration
   cannot be resolved, instead of silently switching to Mail.app. Report the
   selected transport in attempted-batch results, including complete failures.
+- Let mail merge explicitly select SMTP or AppleScript and honor allowed SMTP
+  sender overrides. Reject ambiguous SMTP account labels and unapproved senders
+  before sending the batch.
+- Preserve literal dollar sequences in personalized SMTP and Mail.app messages.
+- Retain Bcc recipients in the author's saved IMAP draft and Sent-folder copy,
+  while keeping the delivered message's Bcc header hidden.
 - Clarify account-label routing and quoted-body limitations in the tool
   description and bundled Apple Mail skill for Codex and other hosts.
 ### Documentation

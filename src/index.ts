@@ -1602,6 +1602,16 @@ registerTool(
         .min(1, "Body is required")
         .describe("Email body — use {{Key}} for placeholders"),
       account: SEND_ACCOUNT_SCHEMA,
+      transport: z
+        .enum(["applescript", "smtp"])
+        .optional()
+        .describe(
+          "Send transport for the whole batch. 'smtp' sends clean MIME without Mail.app " +
+            "quote wrapping and requires matching SMTP configuration; errors never fall " +
+            "back to AppleScript. SMTP accepts an allowed sender email address in account, " +
+            "not a Mail.app account label. 'applescript' explicitly uses Mail.app. If " +
+            "omitted, configured SMTP is used unless account is a Mail.app account label."
+        ),
       delayMs: z
         .number()
         .min(0)
