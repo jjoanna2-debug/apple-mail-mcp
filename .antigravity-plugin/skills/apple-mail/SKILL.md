@@ -186,8 +186,8 @@ historical quotes in replies and forwards without quoting the new text itself.
 For an authorized send that requires unquoted delivery, use explicit
 `transport: "smtp"` only when the configured SMTP identity matches the intended
 sender. A Mail.app account label such as `"Work"` selects AppleScript when
-transport is omitted, even if SMTP is configured. Explicit SMTP does not map
-that label to another account; use the configured identity or an allowed
+transport is omitted, even if SMTP is configured. Explicit SMTP rejects
+that label before sending; use the configured identity or an allowed
 email-form From override. Do not switch sender identities to avoid formatting.
 
 If unquoted delivery is required and matching SMTP access is unavailable,

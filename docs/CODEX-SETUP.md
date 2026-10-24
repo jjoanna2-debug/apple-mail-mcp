@@ -92,9 +92,9 @@ Configuring SMTP alone does not guarantee that every tool call uses it:
   it does not remove quotation markers already present in the submitted text.
 - With `send-email`, omitted `transport` plus a Mail.app account label such as
   `"Work"` or `"iCloud"` selects AppleScript even when SMTP is configured. Explicit
-  SMTP does not translate such a label into a different SMTP account: it uses
-  the configured SMTP identity. An email-form `account` value is a From override
-  subject to the sender restrictions. Confirm that identity before sending.
+  SMTP rejects such labels before sending rather than silently using a different
+  account. Omit `account` only when the configured SMTP identity is intended, or
+  use an allowed email-form From override. Confirm that identity before sending.
 - A native Mail.app draft is a review step, not a delivery-format workaround.
   `send: false` on reply/forward saves a native draft; combining it with
   `transport: "smtp"` is rejected. Do not promise clean SMTP delivery for a draft

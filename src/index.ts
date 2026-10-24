@@ -1513,10 +1513,15 @@ registerTool(
       const threading = sendEmailThreading({ inReplyTo, references }, useSmtp);
       if (!threading.ok) return errorResponse(threading.error);
       if (useSmtp) {
-        // `account` is a Mail.app account label for the AppleScript path; for SMTP
-        // it only makes sense as a From override when it is an actual address.
-        // A bare label (only possible here via explicit transport:"smtp") must not
-        // corrupt the From — fall back to the configured SMTP From in that case.
+        // Explicit SMTP cannot resolve Mail.app labels. Reject instead of
+        // silently sending from the configured, potentially different identity.
+        if (account && !account.includes("@")) {
+          return errorResponse(
+            "A Mail.app account label cannot select an SMTP identity. Use a configured " +
+              "sender email address, omit account to use the configured SMTP sender, " +
+              "or explicitly select transport=applescript."
+          );
+        }
         const smtpFrom = account?.includes("@") ? account : undefined;
         const result = await sendViaSmtp({
           to,

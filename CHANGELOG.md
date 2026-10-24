@@ -10,6 +10,10 @@
 - Let mail merge explicitly select SMTP or AppleScript and honor allowed SMTP
   sender overrides. Reject ambiguous SMTP account labels and unapproved senders
   before sending the batch.
+- Reject a bare Mail.app account label on explicit SMTP single-message sends
+  instead of silently sending from the configured SMTP identity.
+- Make setup diagnostics distinguish SMTP configuration from authenticated
+  delivery, and describe the existing best-effort IMAP Sent-folder copy.
 - Preserve literal dollar sequences in personalized SMTP and Mail.app messages.
 - Retain Bcc recipients in the author's saved IMAP draft and Sent-folder copy,
   while keeping the delivered message's Bcc header hidden.

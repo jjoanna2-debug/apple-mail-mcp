@@ -105009,7 +105009,7 @@ async function runDoctor(mailManager2) {
   checks.push({
     name: "SMTP transport",
     status: isSmtpConfigured() ? "ok" : "warn",
-    detail: isSmtpConfigured() ? `configured (${smtpHost}); send-email auto-prefers clean SMTP (no Mail.app Sent-folder copy; a non-email "account" label still routes to AppleScript). Pass transport:"applescript" to force Mail.app. The apple-mail-send CLI is also available.` : `not configured \u2014 send-email uses AppleScript (subject to macOS 15+ blockquote wrapping). Set ${SMTP_ENV.host} and ${SMTP_ENV.user} (+ password via Keychain) to enable. ${CONFIG_FILE_HINT}. Setup guide: ${SETUP_GUIDE_URL}`
+    detail: isSmtpConfigured() ? `configuration present (${smtpHost}); SMTP authentication and delivery have not been checked. send-email auto-prefers SMTP unless a non-email "account" label selects AppleScript. SMTP sends attempt a best-effort Sent-folder copy through matching-account IMAP; check the send result for whether it was filed. Pass transport:"applescript" to force Mail.app. The apple-mail-send CLI is also available.` : `not configured \u2014 send-email uses AppleScript (subject to macOS 15+ blockquote wrapping). Set ${SMTP_ENV.host} and ${SMTP_ENV.user} (+ password via Keychain) to enable. ${CONFIG_FILE_HINT}. Setup guide: ${SETUP_GUIDE_URL}`
   });
   const healthy = !checks.some((c) => c.status === "fail");
   return { healthy, checks };
@@ -106357,6 +106357,11 @@ registerTool(
       const threading = sendEmailThreading({ inReplyTo, references }, useSmtp);
       if (!threading.ok) return errorResponse(threading.error);
       if (useSmtp) {
+        if (account && !account.includes("@")) {
+          return errorResponse(
+            "A Mail.app account label cannot select an SMTP identity. Use a configured sender email address, omit account to use the configured SMTP sender, or explicitly select transport=applescript."
+          );
+        }
         const smtpFrom = account?.includes("@") ? account : void 0;
         const result = await sendViaSmtp({
           to,

@@ -22,6 +22,12 @@ This is the same local packaging model used in the LinkedIn proposal
 and implementation [#863](https://github.com/stickerdaniel/linkedin-mcp-server/pull/863).
 The next step here is to extend the existing plugin's setup experience.
 
+The LinkedIn work is the local-plugin precedent: package the MCP server and
+skill together and provide a clear sign-in workflow. Its browser-session login
+is different from mailbox-provider OAuth. An Unsplash-style hosted OAuth
+connection is a second model, not a prerequisite for improving this local
+plugin. Reuse the existing Apple Mail plugin rather than create a duplicate.
+
 ## Codex compose parity: current recurring issue
 
 I repeatedly see newly authored email arrive as quoted blocks when I compose
@@ -39,8 +45,8 @@ documented in the README and `src/services/smtpMailer.ts`.
 The current routing also explains why "SMTP is configured" is not sufficient
 evidence that Codex used the workaround. `shouldUseSmtp(undefined, "Work", true)`
 returns `false`: an account label selects Mail.app when transport is omitted.
-Explicit SMTP uses the configured SMTP identity, not a provider chosen from that
-label. Native draft creation also remains separate from direct SMTP delivery.
+Explicit SMTP rejects that label instead of silently choosing the configured
+identity. Native draft creation also remains separate from direct SMTP delivery.
 These verified code paths identify cases to test; they do not prove which path
 produced the messages I received.
 
@@ -53,7 +59,9 @@ reports the transport in attempted-batch results. It also adds explicit
 transport selection and preserves an approved email-form sender override, which
 the previous implementation silently ignored. Explicit SMTP rejects bare
 Mail.app account labels, and sender validation completes before the first
-message is submitted. Failed SMTP submissions are not retried through Mail.app.
+message is submitted. The same rejection now applies to single-message sends;
+previously, explicit SMTP silently discarded a bare account label there.
+Failed SMTP submissions are not retried through Mail.app.
 
 Give the installed Codex plugin the same acceptance gate as Claude Code. Run the
 same compose scenarios through both hosts and record the selected tool,
