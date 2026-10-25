@@ -44,6 +44,41 @@ it does not sign into a mailbox: the default backend uses accounts already
 configured in Mail.app. macOS Automation permission is separate and may be
 requested when the server first accesses Mail.
 
+## Updates and migration
+
+The Git marketplace provides the connection to this repository's releases. After
+a new release is published, refresh the configured marketplace:
+
+```bash
+codex plugin marketplace upgrade apple-mail-mcp
+```
+
+This command refreshes the Git marketplace catalog; it does not replace the
+runtime pin with `@latest`. Install the published plugin version from the
+refreshed marketplace, then start a new Codex session. Confirm that the plugin
+version and its pinned npm runtime refer to the same published release. A merged
+PR or an unpublished candidate is not sufficient for the npm-backed launcher.
+See the [official marketplace command reference](https://learn.chatgpt.com/docs/developer-commands).
+
+An imported archive is a self-contained snapshot. Uploading it as a separate
+private account plugin does not connect that copy to this repository's update
+source. Update such copies by importing or uploading a replacement package;
+refreshing the Git marketplace does not update them.
+
+To move from an archive or private copy to the maintained Git marketplace:
+
+1. Back up personal settings and approval choices, and check that the published
+   release includes any fixes or workflow safeguards you rely on. Keep personal
+   configuration outside the installed plugin cache so updates do not replace it.
+2. Install through the repository marketplace using the commands above. Avoid
+   enabling two Mail connections at once while switching installations.
+3. Start a new Codex session and verify the replacement's icon, tools, and
+   read-only Mail access. Before relying on it for replies, verify sender identity,
+   `In-Reply-To`, `References`, and quotation formatting with an explicitly
+   authorized test message.
+4. Once the replacement passes, remove the redundant plugin and any redundant
+   manual MCP registration. Preserve credentials, settings, and a rollback copy.
+
 ## Standalone plugin archive
 
 Releases include `apple-mail-codex-plugin-v<version>.tar.gz`, a complete local
