@@ -1,5 +1,14 @@
 ## [Unreleased]
 
+## [2.20.32] - 2026-10-25
+
+### Added
+
+- Add a dependency-free HTML prose renderer and CLI for host-driven native Mail
+  composition. Escape authored markup, preserve Unicode and blank paragraphs,
+  and inherit font size without replacing the native signature or quoted history.
+  This helper does not change the MCP body setter or provide UI automation.
+
 ## [2.20.31] - 2026-10-25
 
 ### Fixed

@@ -67,6 +67,9 @@ jobs:
       - name: Run tests with coverage
         run: pnpm run test:coverage
 
+      - name: Test native prose renderer and CLI
+        run: node --test test/render-authored-body.test.mjs
+
       - name: Upload coverage reports
         if: matrix.node-version == 22
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
