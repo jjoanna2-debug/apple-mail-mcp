@@ -1,4 +1,13 @@
-import { lstatSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
@@ -22,8 +31,13 @@ function readRegularFile(root, relative) {
     const stat = lstatSync(current);
     if (stat.isSymbolicLink()) throw new Error(`Symlinked input: ${relative}`);
   }
-  if (!lstatSync(current).isFile()) throw new Error(`Not a regular file: ${relative}`);
-  return readFileSync(current);
+  const fd = openSync(current, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    if (!fstatSync(fd).isFile()) throw new Error(`Not a regular file: ${relative}`);
+    return readFileSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 const jsonBytes = (value) => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);

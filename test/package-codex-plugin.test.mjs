@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { spawn, spawnSync } from "node:child_process";
 import {
   cpSync,
@@ -129,6 +131,36 @@ test("excludes private configuration and files outside the allowlist", (t) => {
     result.files.some((file) => /\.env|config\.json/.test(file)),
     false
   );
+});
+
+test("reads the validated descriptor even if its pathname is replaced", (t) => {
+  const dir = sourceFixture(t);
+  const icon = join(dir, "codex/assets/icon.svg");
+  const original = readFileSync(icon);
+  const identity = fs.statSync(icon);
+  const originalFstat = fs.fstatSync;
+  let replaced = false;
+  fs.fstatSync = (fd, options) => {
+    const stat = originalFstat(fd, options);
+    if (!replaced && stat.dev === identity.dev && stat.ino === identity.ino) {
+      replaced = true;
+      fs.renameSync(icon, `${icon}.original`);
+      writeFileSync(icon, "replaced after descriptor validation");
+    }
+    return stat;
+  };
+  syncBuiltinESMExports();
+  let archive;
+  try {
+    archive = packageCodexPlugin({ root: dir, output: join(dir, "plugin.tar.gz") });
+  } finally {
+    fs.fstatSync = originalFstat;
+    syncBuiltinESMExports();
+  }
+  assert.equal(replaced, true);
+  const extracted = spawnSync("tar", ["-xOf", archive.output, "assets/icon.svg"]);
+  assert.equal(extracted.status, 0, extracted.stderr.toString());
+  assert.deepEqual(extracted.stdout, original);
 });
 
 test("rejects symlinked inputs and output directories", (t) => {
