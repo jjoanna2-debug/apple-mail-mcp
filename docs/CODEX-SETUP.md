@@ -1,7 +1,7 @@
 # Apple Mail in Codex
 
-This guide describes the existing local plugin and the capabilities available in
-`apple-mail-mcp` 2.20.30. The plugin packages the Apple Mail skill, assets, and MCP
+This guide describes the local plugin packaged in this repository and the
+capabilities provided by `apple-mail-mcp`. The plugin packages the Apple Mail skill, assets, and MCP
 configuration. It launches an exactly pinned npm release through `npx`; it does
 not install Node.js, add mail accounts, or provide mailbox-provider OAuth.
 
@@ -19,6 +19,16 @@ Start a new Codex session after installation. The plugin supplies its MCP server
 configuration; a second manual registration of `apple-mail` is unnecessary. Keep
 the packaged release pin rather than replacing it with `@latest` while
 troubleshooting. The repository synchronizes that pin with each release.
+
+The portable entry points are `codex/plugin.json` and `codex/mcp.json` (explicit
+`stdio` transport). Existing `.codex-plugin/plugin.json` and `.mcp.json` files
+remain as compatibility fallbacks, with matching identity, version, assets,
+presentation, and launcher. See the current
+[official packaging guidance](https://developers.openai.com/plugins/build/plugins).
+Local discovery of an unpublished candidate does not establish that its pinned
+npm runtime is available; publish the matching release before registry-based
+runtime installation. Do not replace the pin with a different account or a
+different runtime to hide a failed verification.
 
 ## Verify access without sending mail
 
@@ -78,10 +88,24 @@ made explicit SMTP fail closed instead of falling back to Mail.app; it does not
 fix native delivery, and this guide does not claim otherwise.
 
 SMTP configuration alone does not prove that a particular operation used SMTP.
-A native draft is also not a delivery-format workaround. Check the operation's
-documented transport and sender behavior, then inspect the received message's
-raw MIME and rendered body when verifying delivery. Newly authored text and
-intentional quotations of an earlier message must be evaluated separately.
+Opening or saving an AppleScript-injected draft does not fix its body wrapper.
+
+Hosts that provide supported computer control on the Mac can instead use the
+packaged skill's native-editor workflow: create a genuine native Reply, insert
+only new escaped prose as HTML divs with `font-size: inherit`, and leave the
+native signature and history intact. The host provides the computer control;
+there is no new MCP editor tool in this plugin. No companion helper is required.
+Fixed pixel/point sizes can look correct on Mac yet differ from the native
+signature on mobile; plain unsized HTML paste can acquire another default size.
+
+Inspect the saved draft, then the actual Sent and recipient HTML, public parent
+headers, sender identity, paragraph spacing, and target-client rendering.
+Providers can rewrite an alias even when the composer and Sent copy show the
+selected identity. Rich-text mode, Sent alone, and a Mac preview do not establish
+recipient or mobile correctness. This workaround changes neither the runtime's
+AppleScript setter nor provider authentication. If computer control is absent,
+report that capability gap or use separately configured matching SMTP; do not
+invent a plugin tool or silently fall back to quoted-body injection.
 
 ## Authentication boundaries
 

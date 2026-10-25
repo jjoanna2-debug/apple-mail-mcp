@@ -78,7 +78,20 @@ codex plugin marketplace add sweetrb/apple-mail-mcp
 codex plugin add apple-mail@apple-mail-mcp
 ```
 
-The Codex package registers the same `apple-mail` MCP server through an exactly pinned runtime — `npx -y apple-mail-mcp@<plugin version>` — and includes the Apple Mail skill guidance. The pin in `codex/.mcp.json` is rewritten to match `package.json` by `scripts/sync-plugin-version.mjs` on every version bump, so the plugin manifest and the server it launches are always the same release; CI fails the PR if they drift.
+The Codex package includes a portable `codex/plugin.json`, typed stdio server
+configuration in `codex/mcp.json`, the Apple Mail skill, and the existing assets.
+It retains `codex/.codex-plugin/plugin.json` and `codex/.mcp.json` for compatible
+older hosts. Both layouts register the same `apple-mail` MCP identity through
+`npx -y apple-mail-mcp@<plugin version>`. Release synchronization updates both
+runtime pins and manifest metadata; tests and CI reject drift. An unreleased
+candidate can be discovered locally, but its exact npm version must be
+published before that pinned launcher can be installed from the registry.
+
+Native-editor composition requires computer control supplied by the host;
+this plugin does not bundle a computer-control server. Its skill describes
+inherited-size HTML insertion that preserves native signatures and quoted
+history, plus actual recipient identity, MIME, ancestry, and rendering checks.
+It does not repair the AppleScript body setter or guarantee every mail client.
 
 ### Other Hosts (Hermes, Antigravity)
 

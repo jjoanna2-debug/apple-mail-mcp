@@ -1,5 +1,21 @@
 ## [Unreleased]
 
+## [2.20.32] - 2026-10-25
+
+### Added
+
+- Ship a portable Codex plugin manifest and typed stdio MCP configuration,
+  retaining the existing compatibility layout, upstream identity, and assets.
+  Synchronize both runtime pins and manifest metadata on release, with parity
+  tests for the portable package and generated skill copies.
+
+### Documentation
+
+- Describe native-editor composition with inherited-size HTML for hosts that
+  provide computer control, preserving configured signatures and reply history.
+  Require actual recipient sender, MIME, ancestry, and rendering checks rather
+  than treating a rich-text preview as proof of delivery quality.
+
 ## [2.20.31] - 2026-10-25
 
 ### Fixed
