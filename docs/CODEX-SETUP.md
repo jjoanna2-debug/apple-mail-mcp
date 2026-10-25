@@ -27,8 +27,22 @@ presentation, and launcher. See the current
 [official packaging guidance](https://developers.openai.com/plugins/build/plugins).
 Local discovery of an unpublished candidate does not establish that its pinned
 npm runtime is available; publish the matching release before registry-based
-runtime installation. Do not replace the pin with a different account or a
-different runtime to hide a failed verification.
+runtime installation.
+
+### Enablement and sign-in
+
+Installation is opt-in. Disable the plugin in Codex settings, or disable only
+its bundled MCP server in `~/.codex/config.toml`:
+
+```toml
+[plugins."apple-mail".mcp_servers.apple-mail]
+enabled = false
+```
+
+The package does not override either choice or run installation hooks. Installing
+it does not sign into a mailbox: the default backend uses accounts already
+configured in Mail.app. macOS Automation permission is separate and may be
+requested when the server first accesses Mail.
 
 ## Verify access without sending mail
 

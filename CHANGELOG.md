@@ -8,6 +8,8 @@
   retaining the existing compatibility layout, upstream identity, and assets.
   Synchronize both runtime pins and manifest metadata on release, with parity
   tests for the portable package and generated skill copies.
+- Preserve opt-in installation and independent MCP enablement, with setup
+  instructions and contract tests for user-controlled activation.
 
 ### Documentation
 

@@ -12,6 +12,30 @@ const legacy = json("codex/.codex-plugin/plugin.json");
 const version = json("package.json").version;
 
 describe("portable Codex plugin", () => {
+  it("keeps installation opt-in and server enablement under user control", () => {
+    const entries = json(".agents/plugins/marketplace.json").plugins;
+    const entry = entries.find((plugin: { name: string }) => plugin.name === portable.name);
+    expect(
+      entries.filter((plugin: { name: string }) => plugin.name === portable.name)
+    ).toHaveLength(1);
+    expect(entry.policy).toEqual({ installation: "AVAILABLE", authentication: "ON_INSTALL" });
+    expect(entry).not.toHaveProperty("enabled");
+    for (const manifest of [portable, legacy, portable.extensions["com.openai"]]) {
+      expect(manifest).not.toHaveProperty("enabled");
+      expect(manifest).not.toHaveProperty("hooks");
+    }
+    for (const file of ["codex/mcp.json", "codex/.mcp.json"]) {
+      expect(json(file).mcpServers["apple-mail"]).not.toHaveProperty("enabled");
+    }
+    expect(existsSync(join(root, "codex/hooks/hooks.json"))).toBe(false);
+    expect(existsSync(join(root, "codex/.codex/config.toml"))).toBe(false);
+    const skill = readFileSync(join(root, "skills/apple-mail/SKILL.md"), "utf8");
+    expect(skill).toContain("Do not enable");
+    expect(skill).toContain(
+      "either or override a disabled setting unless the user explicitly requests it."
+    );
+  });
+
   it("preserves identity, publisher, presentation, and release parity", () => {
     expect(portable.$schema).toBe("https://agent-plugins.org/schemas/1.0.0/plugin.schema.json");
     for (const key of [

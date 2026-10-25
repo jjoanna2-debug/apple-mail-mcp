@@ -7,6 +7,9 @@ description: Use this skill when the user wants to manage Apple Mail on macOS - 
 
 This skill enables you to manage Apple Mail on macOS through natural language. Use it whenever the user mentions email, wants to send messages, or needs to read, search, or organize their inbox.
 
+Keep plugin and MCP server enablement under the user's control. Do not enable
+either or override a disabled setting unless the user explicitly requests it.
+
 ## When to Use This Skill
 
 Use this skill when the user:
