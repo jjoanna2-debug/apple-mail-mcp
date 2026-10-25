@@ -4,6 +4,9 @@
 
 ### Added
 
+- Distribute a standalone Codex plugin archive with the bundled server, allowing
+  installation without fetching an npm runtime. Build and verify candidate
+  artifacts in CI and attach the verified archive to the matching GitHub release.
 - Ship a portable Codex plugin manifest and typed stdio MCP configuration,
   retaining the existing compatibility layout, upstream identity, and assets.
   Synchronize both runtime pins and manifest metadata on release, with parity

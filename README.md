@@ -87,6 +87,12 @@ runtime pins and manifest metadata; tests and CI reject drift. An unreleased
 candidate can be discovered locally, but its exact npm version must be
 published before that pinned launcher can be installed from the registry.
 
+The standalone plugin archive bundles the server and requires only Node.js 20+
+on the Mac; it does not fetch a runtime from npm. Download it from the release
+assets, or use the candidate artifact attached to a successful CI run. See
+[Standalone plugin archive](docs/CODEX-SETUP.md#standalone-plugin-archive) for the
+distribution format and local build command.
+
 Native-editor composition requires computer control supplied by the host;
 this plugin does not bundle a computer-control server. Its skill describes
 inherited-size HTML insertion that preserves native signatures and quoted

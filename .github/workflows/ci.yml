@@ -91,6 +91,21 @@ jobs:
             exit 1
           fi
 
+      - name: Verify the distributable plugin archive
+        run: node --test test/package-codex-plugin.test.mjs
+
+      - name: Package the standalone Codex plugin
+        if: matrix.node-version == 22
+        run: node scripts/package-codex-plugin.mjs "$RUNNER_TEMP/apple-mail-codex-plugin.tar.gz"
+
+      - name: Upload the installable plugin candidate
+        if: matrix.node-version == 22
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: apple-mail-codex-plugin-${{ github.sha }}
+          path: ${{ runner.temp }}/apple-mail-codex-plugin.tar.gz
+          if-no-files-found: error
+
       - name: outputSchema contract (boots the built server over stdio)
         if: matrix.node-version == 22
         run: pnpm exec vitest run --config vitest.integration.config.ts test/output-schema.test.ts
@@ -123,6 +138,9 @@ jobs:
               if(!j.result||!j.result.serverInfo||!j.result.serverInfo.version){console.error("no serverInfo in initialize response");process.exit(1)}
               console.log("bundle boots standalone on Node 20: v"+j.result.serverInfo.version);
             })'
+
+      - name: Verify standalone plugin installation on Node 20
+        run: node --test test/package-codex-plugin.test.mjs
 
   # IMAP backend integration tests run against a real IMAP server (GreenMail).
   # Unlike the Mail.app integration suite, the IMAP code path needs no macOS, so

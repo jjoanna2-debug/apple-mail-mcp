@@ -44,6 +44,41 @@ it does not sign into a mailbox: the default backend uses accounts already
 configured in Mail.app. macOS Automation permission is separate and may be
 requested when the server first accesses Mail.
 
+## Standalone plugin archive
+
+Releases include `apple-mail-codex-plugin-v<version>.tar.gz`, a complete local
+plugin with the bundled MCP server, both manifest formats, workflow skill,
+icons, and license. Candidate archives are also available from the
+`apple-mail-codex-plugin-<commit>` artifact on successful CI runs. GitHub wraps
+that artifact in a ZIP; extract it to obtain the plugin's `.tar.gz` archive.
+
+Use the archive with a host that supports importing local plugin packages.
+The Codex CLI's repository-marketplace installation commands above remain the
+supported CLI route; `codex plugin add` does not accept an archive filename.
+Archive installation requires a Mac with Node.js 20 or later and configured
+Mail.app accounts. It uses `node` to start the included server, so it needs no
+`node_modules`, package installation, or unpublished npm release. Mail access
+and Automation permissions are unchanged.
+
+To build the archive from a checkout after the normal build and checks:
+
+```bash
+pnpm run package:codex /absolute/output/directory/apple-mail.tar.gz
+pnpm run test:codex-package
+```
+
+The output directory must already exist. Packaging refuses to overwrite an
+existing archive and rejects symlinked inputs and output directories. It copies
+only the declared plugin files and committed server bundle, excluding local
+configuration and credentials. Only the archive's MCP launchers are changed to
+`${PLUGIN_ROOT}/server/index.js`; the repository marketplace retains its exact
+npm release pin. Identical input files produce identical archive bytes.
+
+The archive tests extract the package with the system `tar`, initialize the
+included server without dependencies, and list its tools without accessing Mail.
+Release automation builds the archive in a read-only job and attaches it only
+to a release tag identifying the same commit.
+
 ## Verify access without sending mail
 
 Ask Codex:
