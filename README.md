@@ -93,6 +93,17 @@ assets, or use the candidate artifact attached to a successful CI run. See
 [Standalone plugin archive](docs/CODEX-SETUP.md#standalone-plugin-archive) for the
 distribution format and local build command.
 
+For a personal build, you may explicitly supply a local PNG:
+`node scripts/package-codex-plugin.mjs /path/apple-mail.tar.gz --icon /path/icon.png`.
+The optional image must be square, noninterlaced, 48–2,048 pixels per side, and
+at most 4 MiB. It is bundled inside the skill's assets directory and used for
+the generated portable and compatibility manifests' light/dark logo and composer
+icons. Source manifests, the runtime, and default artwork remain unchanged;
+omitting `--icon` preserves the standard archive. No image is fetched automatically.
+Supply only artwork you have permission to use and distribute; this option does
+not grant rights to Apple or other third-party artwork, or guarantee that a host
+will refresh an existing listing's cached presentation.
+
 Native-editor composition requires computer control supplied by the host;
 this plugin does not bundle a computer-control server. Its skill describes
 inherited-size HTML insertion that preserves native signatures and quoted
