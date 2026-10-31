@@ -175,8 +175,15 @@ describe("TemplateStore across processes", () => {
       import fs from "node:fs";
       import crypto from "node:crypto";
       import { syncBuiltinESMExports } from "node:module";
+      import { basename, dirname, join } from "node:path";
       import { pathToFileURL } from "node:url";
       const [compiled, file, label, mode, gate, uuid, committed] = process.argv.slice(2);
+      // Production locks and writes the canonical target. macOS tmpdir() uses
+      // /var/... while realpath returns /private/var/...; compare that target so
+      // aliases cannot bypass the transaction barrier or its commit marker.
+      const targetFile = fs.existsSync(file)
+        ? fs.realpathSync(file)
+        : join(fs.realpathSync(dirname(file)), basename(file));
       if (uuid) crypto.randomUUID = () => uuid;
       const nativeRead = fs.readFileSync;
       const nativeRename = fs.renameSync;
@@ -191,7 +198,7 @@ describe("TemplateStore across processes", () => {
         }
       };
       fs.readFileSync = function(path, ...args) {
-        if (saving && path === file) {
+        if (saving && path === targetFile) {
           if (mode === "hold" && !held) {
             held = true;
             process.send({ phase: "inside" });
@@ -214,7 +221,7 @@ describe("TemplateStore across processes", () => {
         }
         const result = nativeRename.call(this, from, to);
         if (number !== undefined && number !== null) process.send({ phase: "numberPublished", number });
-        if (saving && to === file && committed) fs.writeFileSync(committed, "committed");
+        if (saving && to === targetFile && committed) fs.writeFileSync(committed, "committed");
         return result;
       };
       if (mode === "crash") fs.fsyncSync = () => process.exit(23);
@@ -308,52 +315,78 @@ describe("TemplateStore across processes", () => {
     expect(statSync(`${file}.lock`).mode & 0o777).toBe(0o700);
   }, 10000);
 
-  it("keeps a later lexically earlier contender behind an active owner", async () => {
-    new TemplateStore(file).save("Seed", "s", "b");
-    const gate = join(dir, "release-owner");
-    const owner = actor("Owner", "hold", gate, "ffffffff-ffff-ffff-ffff-ffffffffffff");
-    await owner.phase("ready");
-    owner.start();
-    await owner.phase("inside");
-    const later = actor("Later", "guard", gate, "00000000-0000-0000-0000-000000000000");
-    await later.phase("ready");
-    later.start();
-    await later.phase("numberPublished");
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(
-      later.messages.some((message) => message.phase === "done" || message.phase === "failed")
-    ).toBe(false);
-    writeFileSync(gate, "go");
-    await Promise.all([owner.phase("done"), later.phase("done")]);
-    expect(new TemplateStore(file).list().map((t) => t.name)).toEqual(["Seed", "Owner", "Later"]);
-  }, 10000);
+  it.each([false, true])(
+    "keeps a later lexically earlier contender behind an active owner (directory alias=%s)",
+    async (directoryAlias) => {
+      if (directoryAlias) {
+        const target = join(dir, "actual");
+        const alias = join(dir, "alias");
+        mkdirSync(target);
+        symlinkSync(target, alias, "dir");
+        file = join(alias, "templates.json");
+      }
+      new TemplateStore(file).save("Seed", "s", "b");
+      const gate = join(dir, "release-owner");
+      const owner = actor("Owner", "hold", gate, "ffffffff-ffff-ffff-ffff-ffffffffffff");
+      await owner.phase("ready");
+      owner.start();
+      await owner.phase("inside");
+      const later = actor("Later", "guard", gate, "00000000-0000-0000-0000-000000000000");
+      await later.phase("ready");
+      later.start();
+      await later.phase("numberPublished");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(
+        later.messages.some((message) => message.phase === "done" || message.phase === "failed")
+      ).toBe(false);
+      writeFileSync(gate, "go");
+      await Promise.all([owner.phase("done"), later.phase("done")]);
+      expect(new TemplateStore(file).list().map((t) => t.name)).toEqual(["Seed", "Owner", "Later"]);
+    },
+    10000
+  );
 
-  it("waits for a contender paused between choosing and number publication", async () => {
-    new TemplateStore(file).save("Seed", "s", "b");
-    const gate = join(dir, "finish-choosing");
-    const committed = join(dir, "first-committed");
-    const choosing = actor(
-      "First",
-      "choosing",
-      gate,
-      "00000000-0000-0000-0000-000000000000",
-      committed
-    );
-    await choosing.phase("ready");
-    choosing.start();
-    expect((await choosing.phase("numberReady")).number).toBe(1);
-    const other = actor("Second", "guard", committed, "ffffffff-ffff-ffff-ffff-ffffffffffff");
-    await other.phase("ready");
-    other.start();
-    expect((await other.phase("numberPublished")).number).toBe(1);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(
-      other.messages.some((message) => message.phase === "done" || message.phase === "failed")
-    ).toBe(false);
-    writeFileSync(gate, "go");
-    await Promise.all([choosing.phase("done"), other.phase("done")]);
-    expect(new TemplateStore(file).list().map((t) => t.name)).toEqual(["Seed", "First", "Second"]);
-  }, 10000);
+  it.each([false, true])(
+    "waits for a contender paused between choosing and number publication (directory alias=%s)",
+    async (directoryAlias) => {
+      if (directoryAlias) {
+        const target = join(dir, "actual");
+        const alias = join(dir, "alias");
+        mkdirSync(target);
+        symlinkSync(target, alias, "dir");
+        file = join(alias, "templates.json");
+      }
+      new TemplateStore(file).save("Seed", "s", "b");
+      const gate = join(dir, "finish-choosing");
+      const committed = join(dir, "first-committed");
+      const choosing = actor(
+        "First",
+        "choosing",
+        gate,
+        "00000000-0000-0000-0000-000000000000",
+        committed
+      );
+      await choosing.phase("ready");
+      choosing.start();
+      expect((await choosing.phase("numberReady")).number).toBe(1);
+      const other = actor("Second", "guard", committed, "ffffffff-ffff-ffff-ffff-ffffffffffff");
+      await other.phase("ready");
+      other.start();
+      expect((await other.phase("numberPublished")).number).toBe(1);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(
+        other.messages.some((message) => message.phase === "done" || message.phase === "failed")
+      ).toBe(false);
+      writeFileSync(gate, "go");
+      await Promise.all([choosing.phase("done"), other.phase("done")]);
+      expect(new TemplateStore(file).list().map((t) => t.name)).toEqual([
+        "Seed",
+        "First",
+        "Second",
+      ]);
+    },
+    10000
+  );
 
   it("recovers a crashed writer without exposing its staged partial update", async () => {
     new TemplateStore(file).save("Before crash", "s", "b");

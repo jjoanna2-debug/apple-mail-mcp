@@ -514,8 +514,42 @@ describe("native editor process contract (no live UI)", () => {
         script.indexOf("function readSession"),
         script.indexOf("function checkSession")
       );
-      const { execFileSync } =
+      const { execFileSync, spawnSync } =
         await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      // Temporary isolated diagnostics for the real macOS bridge crash. Each
+      // child emits only fixed stage labels and primitive flag types/values;
+      // one crashing child must not prevent the remaining probes from running.
+      const copy =
+        "console.log('copy:start'); var reference = $.CGSessionCopyCurrentDictionary(); console.log('copy:end');";
+      const cast =
+        "console.log('cast:start'); var object = ObjC.castRefToObject(reference); console.log('cast:end');";
+      const unwrap =
+        "console.log('unwrap:start'); var dictionary = ObjC.deepUnwrap(object); console.log('unwrap:end');";
+      const keys =
+        "console.log('keys:start'); var flags = dictionary == null ? {available:false} : {available:true, onConsole:dictionary[ObjC.unwrap($.kCGSessionOnConsoleKey)], loginDone:dictionary[ObjC.unwrap($.kCGSessionLoginDoneKey)]}; console.log('keys:end');";
+      const probes = {
+        copy: `${copy} JSON.stringify({type:typeof reference});`,
+        unwrapWithoutRelease: `${copy} ${cast} ${unwrap} ${keys} JSON.stringify(flags);`,
+        unwrapWithRelease: `${copy} ${cast} ${unwrap} ${keys} if(dictionary != null) {console.log('release:start'); $.CFRelease(reference); console.log('release:end');} JSON.stringify(flags);`,
+        objectAccessWithoutRelease: `${copy} ${cast} console.log('object-keys:start'); var flags = {onConsole:ObjC.unwrap(object.objectForKey($.kCGSessionOnConsoleKey)), loginDone:ObjC.unwrap(object.objectForKey($.kCGSessionLoginDoneKey))}; console.log('object-keys:end'); JSON.stringify(flags);`,
+      };
+      for (const [name, program] of Object.entries(probes)) {
+        const probe = spawnSync(
+          "/usr/bin/osascript",
+          ["-l", "JavaScript", "-e", `ObjC.import('CoreGraphics');\n${program}`],
+          { encoding: "utf8", timeout: 2000 }
+        );
+        console.info(
+          "NATIVE_SESSION_PROBE",
+          JSON.stringify({
+            name,
+            status: probe.status,
+            signal: probe.signal,
+            stdout: probe.stdout,
+            stderr: probe.stderr,
+          })
+        );
+      }
       const output = execFileSync(
         "/usr/bin/osascript",
         [
