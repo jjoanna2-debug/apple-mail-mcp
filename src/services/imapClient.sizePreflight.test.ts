@@ -14,7 +14,9 @@ describe("encoded attachment size preflight", () => {
   });
 
   it("preserves exact declared and unencoded sizes", () => {
-    expect(decodedSizeWithoutBody({ encodedSize: 500, encoding: "base64", declaredSize: 50 })).toEqual({
+    expect(
+      decodedSizeWithoutBody({ encodedSize: 500, encoding: "base64", declaredSize: 50 })
+    ).toEqual({
       size: 50,
       exact: true,
     });
