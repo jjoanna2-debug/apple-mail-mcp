@@ -3670,8 +3670,11 @@ export async function imapFetchAttachment(
     // is what streamToBuffer counts) — a base64 part's encoded size is ~4/3 of
     // it and would refuse files that fit. Estimate only; the stream cut-off
     // below stays the hard guard.
-    const expected = decodedSizeWithoutBody(match).size;
-    if (expected > maxBytes) {
+    const estimate = decodedSizeWithoutBody(match);
+    // An estimate can exceed the decoded payload for wrapped base64 and
+    // quoted-printable. Only exact sizes may reject before streaming.
+    const expected = estimate.size;
+    if (estimate.exact && expected > maxBytes) {
       return {
         success: false,
         error: `IMAP attachment "${attachmentName}" is ${expected} bytes; the maximum is ${maxBytes} bytes (${maxBytes / 1024 / 1024} MiB).${maxBytes < MAX_IMAP_ATTACHMENT_BYTES ? " Use save-attachment for larger files." : ""}`,
