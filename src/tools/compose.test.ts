@@ -39,7 +39,14 @@ function fixture() {
   return {
     mail: {
       getRawSource: vi.fn(() => null),
+      getRawSourceWithLocation: vi.fn(
+        (): { raw: string; account: string; mailbox: string } | null => null
+      ),
       getMessageContent: vi.fn(() => null),
+      listAccountsChecked: vi.fn(() => ({
+        failed: false,
+        accounts: [{ name: "Personal", email: cfg.from, addresses: [cfg.from], enabled: true }],
+      })),
       replyToMessage: vi.fn(() => ({ success: true })),
       forwardMessage: vi.fn(() => ({ success: true })),
     },
@@ -56,6 +63,8 @@ function fixture() {
 
 function expectNoApple(d: ReturnType<typeof fixture>) {
   expect(d.mail.getRawSource).not.toHaveBeenCalled();
+  expect(d.mail.getRawSourceWithLocation).not.toHaveBeenCalled();
+  expect(d.mail.listAccountsChecked).not.toHaveBeenCalled();
   expect(d.mail.getMessageContent).not.toHaveBeenCalled();
   expect(d.numericId).not.toHaveBeenCalled();
   expect(d.mail.replyToMessage).not.toHaveBeenCalled();
@@ -479,11 +488,16 @@ describe("reply and forward transport routing", () => {
 
   it("reads numeric sources through Mail.app but still delivers over SMTP", async () => {
     const d = fixture();
-    d.mail.getRawSource.mockReturnValue(raw);
-    d.mail.getMessageContent.mockReturnValue({ plainText: "Numeric original." });
+    d.mail.getRawSourceWithLocation.mockReturnValue({ raw, account: "Personal", mailbox: "INBOX" });
+    d.mail.getMessageContent.mockReturnValue({
+      plainText: "Numeric original.",
+      rfcMessageId: "parent@example.com",
+    });
     const result = await runReply(d, { ...args, id: "42" });
     expect(result.structuredContent?.transport).toBe("smtp");
-    expect(d.mail.getRawSource).toHaveBeenCalledWith("42");
+    expect(d.mail.getRawSourceWithLocation).toHaveBeenCalledWith("42");
+    expect(d.mail.getRawSource).not.toHaveBeenCalled();
+    expect(d.smtpSend.mock.calls[0][0].body).toContain("Numeric original.");
     expect(d.imapSource).not.toHaveBeenCalled();
     expect(d.numericId).not.toHaveBeenCalled();
     expect(d.mail.replyToMessage).not.toHaveBeenCalled();
@@ -724,6 +738,11 @@ describe("reply and forward transport routing", () => {
     async (transport) => {
       const d = fixture();
       d.mail.getRawSource.mockReturnValue(raw);
+      d.mail.getRawSourceWithLocation.mockReturnValue({
+        raw,
+        account: "Personal",
+        mailbox: "INBOX",
+      });
       const result = await runReply(d, { ...args, id: "42", transport });
       expect(result.isError).not.toBe(true);
       const body =
@@ -742,6 +761,11 @@ describe("reply and forward transport routing", () => {
         const html = raw.replace("text/plain", "text/html");
         d.imapSource.mockResolvedValue({ raw: html, accountUser: cfg.user });
         d.mail.getRawSource.mockReturnValue(html);
+        d.mail.getRawSourceWithLocation.mockReturnValue({
+          raw: html,
+          account: "Personal",
+          mailbox: "INBOX",
+        });
         const result = await runReply(d, { ...args, id: sourceId, transport });
         expect(result.isError).toBe(true);
         expect(JSON.stringify(result)).toContain("no readable plain-text body");

@@ -45,6 +45,10 @@ import {
   STALLED_MAILBOX_TTL_MS,
 } from "@/services/stalledMailboxStore.js";
 import { materializeAttachments } from "@/utils/attachmentMaterialize.js";
+import {
+  MAX_FETCH_ATTACHMENT_BYTES,
+  FETCH_ATTACHMENT_TOO_LARGE,
+} from "@/utils/attachmentLimits.js";
 import { extractAddress, pickSenderAddress, senderGuardScript } from "@/utils/senderAccount.js";
 import { nativeEditorPreflight, insertNativeAuthoredBody } from "@/services/nativeMailComposer.js";
 import { resolveAttachmentReadPath } from "@/utils/attachmentReadPolicy.js";
@@ -4271,6 +4275,39 @@ ${indent}end try${this.sanitizeFragment("_uacct", indent)}${this.sanitizeFragmen
   }
 
   /**
+   * Read a numeric message's source and owning location in the same lookup.
+   * SMTP replies/forwards need this binding before choosing their sender; a
+   * separate metadata lookup could resolve a different reused numeric id.
+   * Preserve the strict resolver's ambiguity checks and remembered-location
+   * behavior. An On My Mac result has its explicit local-store label, never an
+   * inferred sender account from the message's untrusted address headers.
+   */
+  getRawSourceWithLocation(id: string): { raw: string; account: string; mailbox: string } | null {
+    this.lastMessageLookupError = undefined;
+    const output = this.resolveById(
+      id,
+      `set _sourceMailbox to ""
+       ${mailboxPathFragment("_hitMb", "_sourceMailbox")}
+       if _hitAcct contains "${FIELD_SEP}" or _sourceMailbox contains "${FIELD_SEP}" then return "invalid-source-scope"
+       return _hitAcct & "${FIELD_SEP}" & _sourceMailbox & "${FIELD_SEP}" & (source of msg)`,
+      undefined
+    );
+    if (output === null) return null;
+    const first = output.indexOf(FIELD_SEP);
+    const second = output.indexOf(FIELD_SEP, first + 1);
+    if (first < 1 || second <= first + 1 || !output.slice(second + 1).trim()) {
+      this.lastMessageLookupError =
+        "Mail could not return a readable source with its account and mailbox.";
+      return null;
+    }
+    return {
+      account: output.slice(0, first),
+      mailbox: output.slice(first + 1, second),
+      raw: output.slice(second + 1),
+    };
+  }
+
+  /**
    * List messages in a mailbox.
    *
    * @param mailbox - Mailbox to list from (default: INBOX)
@@ -6496,7 +6533,13 @@ ${this.errorEmit("              ")}
           error: `Attachment "${attachmentName}" not found on message ${id}`,
         };
       }
+      if (lstatSync(dest).size > MAX_FETCH_ATTACHMENT_BYTES) {
+        return { success: false, error: FETCH_ATTACHMENT_TOO_LARGE };
+      }
       const buf = readFileSync(dest);
+      if (buf.length > MAX_FETCH_ATTACHMENT_BYTES) {
+        return { success: false, error: FETCH_ATTACHMENT_TOO_LARGE };
+      }
       return { success: true, base64: buf.toString("base64"), bytes: buf.length };
     } catch (e) {
       return { success: false, error: e instanceof Error ? e.message : String(e) };
@@ -8042,33 +8085,17 @@ ${actionStmts.join("\n")}
   }
 
   /**
-   * Get sync status for Mail.app.
-   *
-   * Checks for sync activity indicators like:
-   * - Activity monitor status
-   * - Network activity status
-   * - Background refresh indicators
+   * Observe whether Mail.app is running and its configured account/mailbox
+   * counts. These are not evidence of synchronization, pending uploads, or a
+   * recent database change: the AppleScript interface exposes none of those
+   * measurements here. Preserve that uncertainty instead of inventing zeros.
    *
    * @returns Sync status information
    */
   getSyncStatus(): SyncStatus {
-    // Check for Mail.app background activity and sync status
-    // Mail.app doesn't expose sync status directly through AppleScript,
-    // so we check for recent changes and activity indicators
-    const script = buildAppLevelScript(`
-      set syncInfo to ""
-
-      -- Check if Mail.app is running
-      tell application "System Events"
-        set mailRunning to (name of processes) contains "Mail"
-      end tell
-
-      if not mailRunning then
-        return "not_running"
-      end if
-
-      -- Check for background activity by looking at message counts changing
-      -- This is a proxy for sync activity since Mail doesn't expose sync status
+    // Reuse the non-launching guard. A status query must not start Mail or
+    // require System Events permission merely to inspect its running state.
+    const script = buildAppLevelScriptIfRunning(`
       set accountCount to count of accounts
       set totalMailboxes to 0
       repeat with acct in accounts
@@ -8084,36 +8111,40 @@ ${actionStmts.join("\n")}
 
     if (!result.success) {
       return {
-        syncDetected: false,
-        pendingUpload: 0,
-        recentActivity: false,
-        secondsSinceLastChange: -1,
-        error: result.error,
+        syncState: "unavailable",
+        error: result.error || "Could not read Mail.app status",
       };
     }
 
-    if (result.output === "not_running") {
+    if (result.output.startsWith(MAIL_NOT_RUNNING_MARKER)) {
       return {
+        mailRunning: false,
+        syncState: "not-running",
         syncDetected: false,
-        pendingUpload: 0,
-        recentActivity: false,
-        secondsSinceLastChange: -1,
-        error: "Mail.app is not running",
+        reason: "Mail.app is not running; provider synchronization was not checked.",
       };
     }
 
-    // Parse the response
     const parts = result.output.split(FIELD_SEP);
-    const isRunning = parts[0] === "running";
-    const accountCount = parseInt(parts[1]) || 0;
+    if (
+      parts.length !== 3 ||
+      parts[0] !== "running" ||
+      !/^\d+$/.test(parts[1]) ||
+      !/^\d+$/.test(parts[2]) ||
+      !Number.isSafeInteger(Number(parts[1])) ||
+      !Number.isSafeInteger(Number(parts[2]))
+    ) {
+      return { syncState: "unavailable", error: "Mail.app returned an invalid status observation" };
+    }
 
-    // Mail.app is running with accounts configured - assume sync is active
-    // (Mail.app syncs automatically when running)
     return {
-      syncDetected: isRunning && accountCount > 0,
-      pendingUpload: 0, // Not exposed by Mail.app
-      recentActivity: isRunning,
-      secondsSinceLastChange: 0,
+      mailRunning: true,
+      accountCount: Number(parts[1]),
+      mailboxCount: Number(parts[2]),
+      syncState: "unknown",
+      reason:
+        "Running state and account counts do not establish sync activity. " +
+        "Mail.app does not expose pending uploads or last-change timing through this check.",
     };
   }
 }

@@ -62,6 +62,80 @@ describe("native authored HTML", () => {
 });
 
 describe("native editor process contract (no live UI)", () => {
+  it("unwraps an absent Objective-C ownership marker before snapshotting", () => {
+    nativeEditorPreflight();
+    const script = h.run.mock.calls[0][1][3];
+    const helper = script.slice(
+      script.indexOf("function snapshotClipboard"),
+      script.indexOf("function main")
+    );
+    const absentMarker = {};
+    const clipboard = {
+      changeCount: 42,
+      stringForType: () => absentMarker,
+      pasteboardItems: { count: 0 },
+    };
+    const recovery = runInNewContext(helper + "\nsnapshotClipboard(clipboard, 'operation')", {
+      clipboard,
+      ObjC: { unwrap: (value: unknown) => (value === absentMarker ? null : value) },
+      $: Object.assign(
+        (text: string) => ({ lengthOfBytesUsingEncoding: () => Buffer.byteLength(text) }),
+        { NSUTF8StringEncoding: 4 }
+      ),
+      fail: (code: string) => {
+        throw new Error(code);
+      },
+    });
+    expect(recovery).toMatchObject({ originalCount: 42, token: "operation", items: [] });
+  });
+
+  it("refuses to snapshot another native operation's temporary clipboard", () => {
+    nativeEditorPreflight();
+    const script = h.run.mock.calls[0][1][3];
+    const helper = script.slice(
+      script.indexOf("function snapshotClipboard"),
+      script.indexOf("function main")
+    );
+    const token = "first-native-operation";
+    const contents = [
+      { type: "public.utf8-plain-text", text: "First operation's authored body" },
+      { type: "org.apple-mail-mcp.native-composition", text: token },
+    ];
+    const clipboard = {
+      changeCount: 42,
+      stringForType: vi.fn(() => token),
+      pasteboardItems: {
+        count: 1,
+        objectAtIndex: () => ({
+          types: { count: contents.length, objectAtIndex: (i: number) => contents[i].type },
+          dataForType: (type: string) => {
+            const text = contents.find((entry) => entry.type === type)!.text;
+            return {
+              length: Buffer.byteLength(text),
+              base64EncodedStringWithOptions: () => Buffer.from(text).toString("base64"),
+            };
+          },
+        }),
+      },
+    };
+    expect(() =>
+      runInNewContext(helper + "\nsnapshotClipboard(clipboard, 'second-native-operation')", {
+        clipboard,
+        ObjC: { unwrap: (value: unknown) => value },
+        $: Object.assign(
+          (text: string) => ({ lengthOfBytesUsingEncoding: () => Buffer.byteLength(text) }),
+          {
+            NSUTF8StringEncoding: 4,
+            NSPasteboardItem: { alloc: { init: { setDataForType: () => true } } },
+          }
+        ),
+        fail: (code: string) => {
+          throw new Error(code);
+        },
+      })
+    ).toThrow("clipboard-busy");
+  });
+
   it.each([
     { session: null, code: "session-unavailable" },
     {
@@ -721,6 +795,7 @@ JSON.stringify({count: Number(items.count), types: ObjC.deepUnwrap(item.types).s
       };
       const clipboard = {
         changeCount: 2,
+        stringForType: () => null,
         pasteboardItems: {
           count: 1,
           objectAtIndex: () => ({
@@ -813,6 +888,7 @@ JSON.stringify({count: Number(items.count), types: ObjC.deepUnwrap(item.types).s
     "target",
     "focus",
     "clipboard",
+    "clipboard-busy",
     "restore",
     "readback",
   ])("returns sanitized %s errors without fallback or retry", (code) => {

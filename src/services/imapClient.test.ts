@@ -1940,6 +1940,61 @@ describe("attachments via BODYSTRUCTURE (I1)", () => {
     expect(r.error).toMatch(/25 MiB/i);
   });
 
+  it("honors the smaller inline limit without lowering the file-save limit", async () => {
+    let downloaded = false;
+    const client: ImapClientLike = {
+      ...attClient(),
+      fetchOne: async () => ({
+        uid: 9,
+        bodyStructure: {
+          part: "2",
+          type: "application/pdf",
+          disposition: "attachment",
+          dispositionParameters: { filename: "report.pdf" },
+          size: 4 * 1024 * 1024,
+        },
+      }),
+      download: async () => {
+        downloaded = true;
+        return {
+          content: (async function* () {
+            yield Buffer.from("file-save");
+          })(),
+        };
+      },
+    };
+    const deps = { config: cfg, connect: async () => client };
+    const inline = await imapFetchAttachment(MID, "report.pdf", deps, 3 * 1024 * 1024);
+    expect(inline.success).toBe(false);
+    expect(inline.error).toContain("save-attachment");
+    expect(downloaded).toBe(false);
+    const saved = await imapFetchAttachment(MID, "report.pdf", deps);
+    expect(saved.success).toBe(true);
+    expect(downloaded).toBe(true);
+  });
+
+  it("bounds an inline stream whose declared size understates the content", async () => {
+    const client: ImapClientLike = {
+      ...attClient(),
+      download: async () => ({
+        content: (async function* () {
+          yield Buffer.alloc(3 * 1024 * 1024);
+          yield Buffer.from([1]);
+        })(),
+      }),
+    };
+    const result = await imapFetchAttachment(
+      MID,
+      "report.pdf",
+      { config: cfg, connect: async () => client },
+      3 * 1024 * 1024
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("3 MiB");
+    expect(result.error).toContain("save-attachment");
+    expect(result.base64).toBeUndefined();
+  });
+
   it("errors clearly when the attachment name isn't found", async () => {
     const r = await imapFetchAttachment(MID, "missing.txt", {
       config: cfg,
