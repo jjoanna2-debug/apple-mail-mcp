@@ -99612,13 +99612,13 @@ function readSession() {
   var reference = $.CGSessionCopyCurrentDictionary();
   var dictionary = ObjC.deepUnwrap(ObjC.castRefToObject(reference));
   if (dictionary === null || dictionary === undefined) return {available: false};
-  try {
-    // Use documented keys, not the private screen-lock key. These establish
-    // a console login session, not unlocked status or usable editor focus.
-    return {available: true,
-      onConsole: dictionary[ObjC.unwrap($.kCGSessionOnConsoleKey)],
-      loginDone: dictionary[ObjC.unwrap($.kCGSessionLoginDoneKey)]};
-  } finally { $.CFRelease(reference); }
+  // Keep the copied value alive for this bounded osascript process: manually
+  // releasing it while JXA wrappers still refer to it crashes the native bridge.
+  // CGSession.h defines these public keys as CFSTR macros, not exported globals.
+  // They are not screen-lock flags: an on-console session can still be locked.
+  return {available: true,
+    onConsole: dictionary.kCGSSessionOnConsoleKey,
+    loginDone: dictionary.kCGSessionLoginDoneKey};
 }
 function checkSession() {
   var session;
