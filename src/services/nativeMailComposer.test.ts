@@ -22,7 +22,7 @@ const input = {
   body: "Private prose — ã, ç, œ, 中文\n\nNext paragraph.",
 };
 
-const activeSession = { console: true, login: true };
+const activeSession = { kCGSSessionOnConsoleKey: true, kCGSessionLoginDoneKey: true };
 const objc = {
   import: () => undefined,
   bindFunction: () => undefined,
@@ -33,8 +33,7 @@ const objc = {
 function sessionApi(session: unknown = activeSession) {
   return {
     CGSessionCopyCurrentDictionary: vi.fn(() => session),
-    kCGSessionOnConsoleKey: "console",
-    kCGSessionLoginDoneKey: "login",
+    // CGSession.h defines these keys as CFSTR macros, not JXA globals.
     CFRelease: vi.fn(),
   };
 }
@@ -65,10 +64,19 @@ describe("native authored HTML", () => {
 describe("native editor process contract (no live UI)", () => {
   it.each([
     { session: null, code: "session-unavailable" },
-    { session: { console: false, login: true }, code: "session-inactive" },
-    { session: { console: true, login: false }, code: "session-login" },
+    {
+      session: { kCGSSessionOnConsoleKey: false, kCGSessionLoginDoneKey: true },
+      code: "session-inactive",
+    },
+    {
+      session: { kCGSSessionOnConsoleKey: true, kCGSessionLoginDoneKey: false },
+      code: "session-login",
+    },
     { session: {}, code: "session-unknown" },
-    { session: { console: "true", login: true }, code: "session-unknown" },
+    {
+      session: { kCGSSessionOnConsoleKey: "true", kCGSessionLoginDoneKey: true },
+      code: "session-unknown",
+    },
     { session: activeSession, code: undefined },
   ])("checks the actual GUI session before permission checks: $code", ({ session, code }) => {
     nativeEditorPreflight();
@@ -98,7 +106,7 @@ describe("native editor process contract (no live UI)", () => {
       code ? { success: false, code, stage: "session" } : { success: true }
     );
     expect(api.CGSessionCopyCurrentDictionary).toHaveBeenCalledOnce();
-    expect(api.CFRelease).toHaveBeenCalledTimes(session === null ? 0 : 1);
+    expect(api.CFRelease).not.toHaveBeenCalled();
     expect(application).not.toHaveBeenCalled();
     expect(permission).toHaveBeenCalledTimes(code ? 0 : 2);
   });
@@ -514,57 +522,28 @@ describe("native editor process contract (no live UI)", () => {
         script.indexOf("function readSession"),
         script.indexOf("function checkSession")
       );
-      const { execFileSync, spawnSync } =
+      const { execFileSync } =
         await vi.importActual<typeof import("node:child_process")>("node:child_process");
-      // Temporary isolated diagnostics for the real macOS bridge crash. Each
-      // child emits only fixed stage labels and primitive flag types/values;
-      // one crashing child must not prevent the remaining probes from running.
-      const copy =
-        "console.log('copy:start'); var reference = $.CGSessionCopyCurrentDictionary(); console.log('copy:end');";
-      const cast =
-        "console.log('cast:start'); var object = ObjC.castRefToObject(reference); console.log('cast:end');";
-      const unwrap =
-        "console.log('unwrap:start'); var dictionary = ObjC.deepUnwrap(object); console.log('unwrap:end');";
-      const keys =
-        "console.log('keys:start'); var flags = dictionary == null ? {available:false} : {available:true, onConsole:dictionary[ObjC.unwrap($.kCGSessionOnConsoleKey)], loginDone:dictionary[ObjC.unwrap($.kCGSessionLoginDoneKey)]}; console.log('keys:end');";
-      const probes = {
-        copy: `${copy} JSON.stringify({type:typeof reference});`,
-        unwrapWithoutRelease: `${copy} ${cast} ${unwrap} ${keys} JSON.stringify(flags);`,
-        unwrapWithRelease: `${copy} ${cast} ${unwrap} ${keys} if(dictionary != null) {console.log('release:start'); $.CFRelease(reference); console.log('release:end');} JSON.stringify(flags);`,
-        objectAccessWithoutRelease: `${copy} ${cast} console.log('object-keys:start'); var flags = {onConsole:ObjC.unwrap(object.objectForKey($.kCGSessionOnConsoleKey)), loginDone:ObjC.unwrap(object.objectForKey($.kCGSessionLoginDoneKey))}; console.log('object-keys:end'); JSON.stringify(flags);`,
-      };
-      for (const [name, program] of Object.entries(probes)) {
-        const probe = spawnSync(
-          "/usr/bin/osascript",
-          ["-l", "JavaScript", "-e", `ObjC.import('CoreGraphics');\n${program}`],
-          { encoding: "utf8", timeout: 2000 }
-        );
-        console.info(
-          "NATIVE_SESSION_PROBE",
-          JSON.stringify({
-            name,
-            status: probe.status,
-            signal: probe.signal,
-            stdout: probe.stdout,
-            stderr: probe.stderr,
-          })
-        );
-      }
+      // Exercise the repeated checks used during composition, including native
+      // wrapper cleanup at process exit. Only the two public flags leave JXA.
       const output = execFileSync(
         "/usr/bin/osascript",
         [
           "-l",
           "JavaScript",
           "-e",
-          `ObjC.import('CoreGraphics');\n${helper}\nJSON.stringify(readSession());`,
+          `ObjC.import('CoreGraphics');\n${helper}\nvar states = []; for (var i = 0; i < 8; i++) states.push(readSession()); JSON.stringify(states);`,
         ],
         { encoding: "utf8", timeout: 10000 }
       );
-      const state = JSON.parse(output);
-      expect(typeof state.available).toBe("boolean");
-      if (state.available) {
-        expect(typeof state.onConsole).toBe("boolean");
-        expect(typeof state.loginDone).toBe("boolean");
+      const states = JSON.parse(output);
+      expect(states).toHaveLength(8);
+      for (const state of states) {
+        expect(typeof state.available).toBe("boolean");
+        if (state.available) {
+          expect(typeof state.onConsole).toBe("boolean");
+          expect(typeof state.loginDone).toBe("boolean");
+        }
       }
     }
   );
