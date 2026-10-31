@@ -6539,7 +6539,10 @@ ${this.errorEmit("              ")}
       // Open once, without following a symlink, and validate the opened object.
       // A pathname can be swapped between lstat and readFile; reading through
       // the same descriptor also prevents a growing file from bypassing the cap.
-      const fd = openSync(dest, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+      const fd = openSync(
+        dest,
+        fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK
+      );
       try {
         const stat = fstatSync(fd);
         if (!stat.isFile()) return { success: false, error: "Attachment is not a regular file." };
@@ -6549,7 +6552,9 @@ ${this.errorEmit("              ")}
         const chunks: Buffer[] = [];
         let total = 0;
         while (total <= MAX_FETCH_ATTACHMENT_BYTES) {
-          const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, MAX_FETCH_ATTACHMENT_BYTES + 1 - total));
+          const chunk = Buffer.allocUnsafe(
+            Math.min(64 * 1024, MAX_FETCH_ATTACHMENT_BYTES + 1 - total)
+          );
           const count = readSync(fd, chunk, 0, chunk.length, null);
           if (count === 0) break;
           total += count;
