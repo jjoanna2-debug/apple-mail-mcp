@@ -627,6 +627,22 @@ Both plain-text and HTML bodies are supported — over SMTP an HTML body (CLI
 `--html-body-file`) is sent as `multipart/alternative` with the plain-text
 fallback.
 
+SMTP results distinguish server acceptance from complete recipient acceptance.
+When some recipients are rejected, tools return `sent: true`, `ok: false`,
+`partial: true`, and the actual `accepted` and `rejected` addresses. This is a
+completed submission for the accepted recipients: do not resend the whole
+message. Review only rejected addresses before another send. Acceptance is not
+a delivery receipt. The CLI returns exit status `2` for this partial outcome;
+complete rejection remains an error. Sent-copy results are reported separately.
+
+If the SMTP connection fails before a final acknowledgment can establish the
+outcome, the provider may already have accepted the message. The tools return
+`deliveryUnknown: true`, `ok: false`, and omit `sent`; the CLI returns exit status
+`3`. Check provider-side evidence before sending again. The server does not
+retry automatically or switch transports after that uncertain result. Serial
+results count unknown outcomes separately from confirmed submissions and known
+failures.
+
 Configure SMTP via environment variables on the MCP server. The password is
 read from the macOS **Keychain** by default, so no secret goes in config:
 
@@ -1127,7 +1143,7 @@ Forward a message to new recipients.
 
 **Attachments (2.20.0, #267):** `attachments` adds new files to the forward, with or without a prepended `body`, under the same rules, validation and per-transport mechanics as `reply-to-message`'s attachments. They are independent of the original's attachments (which the SMTP path still does not reattach).
 
-SMTP forwarding requires a readable plain-text original. Scoped AppleScript-content forwards that add a body or attachments also stop if the original text is unreadable; without added content, Mail retains its own forward history. Native-editor mode preserves Mail's native history. An intentionally empty plain-text message is still valid.
+SMTP forwarding requires a readable plain-text original. AppleScript-content forwards that add a body or attachments also stop if the original text is unreadable, with or without explicit source scope. Numeric sources can recover readable plaintext from raw MIME. Without added content, Mail retains its own forward history. Native-editor mode preserves Mail's native history. An intentionally empty plain-text message is still valid.
 
 **⚠️ Safety:** With the default `send: true`, sends real mail immediately and cannot be unsent. Confirm the recipients, subject, and body with the user before calling (or pass `send: false` to save a draft for review).
 

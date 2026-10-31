@@ -24,8 +24,10 @@ import {
   imapSearchMessages,
   imapListMessages,
   resolveImapConfigs,
+  MAX_UNSCOPED_SEARCH_DEPTH,
   type ImapSearchArgs,
   type ImapConfig,
+  type ImapListResult,
   type ImapDeps,
   type OmittedMessage,
 } from "@/services/imapClient.js";
@@ -101,12 +103,13 @@ export function dedupKey(row: MessageRow): string {
 /**
  * Merge IMAP rows with AppleScript rows: concatenate, de-dup by {@link dedupKey}
  * preferring the IMAP copy (IMAP rows are passed first and win on collision),
- * sort newest-first by dateReceived, then apply `limit`.
+ * sort newest-first by dateReceived, then apply the global `offset` and `limit`.
  */
 export function mergeMessages(
   imapRows: MessageRow[],
   appleRows: MessageRow[],
-  limit: number
+  limit: number,
+  offset = 0
 ): MessageRow[] {
   const byKey = new Map<string, MessageRow>();
   // IMAP first so its copy wins; AppleScript only fills keys IMAP didn't supply.
@@ -120,13 +123,16 @@ export function mergeMessages(
   }
   const merged = [...byKey.values()];
   merged.sort((a, b) => dateEpoch(b) - dateEpoch(a)); // newest first
-  return limit >= 0 ? merged.slice(0, limit) : merged;
+  return limit >= 0 ? merged.slice(offset, offset + limit) : merged.slice(offset);
 }
 
 /**
  * Fan an IMAP message query out over EVERY configured IMAP account and return
  * the concatenated structured rows (not yet merged with AppleScript, not yet
- * limited — the caller merges + limits). `kind` picks the underlying query so
+ * limited — the caller merges + pages). Each source contributes its newest
+ * offset+limit unique rows; duplicate-heavy prefixes are widened until that
+ * depth is reached, the source is exhausted, or bounded work must stop.
+ * `kind` picks the underlying query so
  * the mailbox-default and unreadOnly semantics match the single-account path.
  *
  * Per-account failures are swallowed (logged) so one unreachable account doesn't
@@ -149,6 +155,17 @@ export async function fanOutImapMessages(
    *  account the fan-out never reached is listed as "<account> / *". */
   timedOutMailboxes: string[];
 }> {
+  const offset = args.offset ?? 0;
+  const depth = offset + (args.limit ?? 50);
+  // A global page needs a prefix from every source, unlike a single mailbox's
+  // efficient sequence window. Keep that work bounded rather than turning a
+  // deep page into a huge fetch from every configured account.
+  if (offset > 0 && depth > MAX_UNSCOPED_SEARCH_DEPTH) {
+    throw new Error(
+      `Merged account pagination supports offset + limit up to ${MAX_UNSCOPED_SEARCH_DEPTH.toLocaleString("en-US")}. ` +
+        `Pass an explicit account and mailbox to page deeper.`
+    );
+  }
   const rows: MessageRow[] = [];
   const timedOutMailboxes: string[] = [];
   const accountsQueried: string[] = [];
@@ -167,12 +184,58 @@ export async function fanOutImapMessages(
     // 6154 `\\All` mailbox when available (Gmail), otherwise it searches every
     // selectable mailbox (iCloud/generic IMAP). Hostname heuristics cannot tell
     // us what a server actually exposes.
-    const perAccountArgs: ImapSearchArgs = { ...args, account: undefined };
+    let res: ImapListResult | undefined;
     try {
-      const res =
-        kind === "search"
-          ? await imapSearchMessages(perAccountArgs, { ...deps, config })
-          : await imapListMessages(perAccountArgs, { ...deps, config });
+      let prefixDepth = depth;
+      for (;;) {
+        const perAccountArgs: ImapSearchArgs = {
+          ...args,
+          account: undefined,
+          offset: 0,
+          limit: prefixDepth,
+        };
+        const next =
+          kind === "search"
+            ? await imapSearchMessages(perAccountArgs, { ...deps, config })
+            : await imapListMessages(perAccountArgs, { ...deps, config });
+        res =
+          res && next.partial
+            ? { ...next, messages: mergeMessages(next.messages, res.messages, -1) }
+            : next;
+        const uniqueCount = new Set(res.messages.map(dedupKey)).size;
+        if (uniqueCount >= depth || !res.hasMore || res.partial) break;
+        if (prefixDepth >= MAX_UNSCOPED_SEARCH_DEPTH) {
+          const scope = `${config.accountLabel} / ${args.mailbox || "*"}`;
+          failedMailboxes.push(scope);
+          failedMailboxReasons[scope] =
+            `Merged pagination reached the ${MAX_UNSCOPED_SEARCH_DEPTH.toLocaleString("en-US")}-message prefix cap ` +
+            `before finding ${depth} unique messages. Scope the account and mailbox to page deeper.`;
+          break;
+        }
+        if (deps.signal?.aborted) {
+          timedOutMailboxes.push(`${config.accountLabel} / ${args.mailbox || "*"}`);
+          break;
+        }
+        // Geometric growth limits the number of round trips and bounds the
+        // cumulative fetched prefix to less than three times the 5,000 cap.
+        prefixDepth = Math.min(
+          MAX_UNSCOPED_SEARCH_DEPTH,
+          Math.max(prefixDepth + 1, prefixDepth * 2)
+        );
+      }
+    } catch (e) {
+      if (res) {
+        const scope = `${config.accountLabel} / ${args.mailbox || "*"}`;
+        failedMailboxes.push(scope);
+        failedMailboxReasons[scope] = `Could not refill merged pagination: ${String(e)}`;
+      } else {
+        accountsFailed.push(config.accountLabel);
+      }
+      console.error(`IMAP fan-out failed for account "${config.accountLabel}": ${String(e)}`);
+    }
+    // Keep a previously read prefix if a later refill fails; coverage names
+    // the unfinished scope instead of claiming the whole account returned none.
+    if (res) {
       rows.push(...res.messages);
       accountsQueried.push(config.accountLabel);
       failedMailboxes.push(
@@ -192,9 +255,6 @@ export async function fanOutImapMessages(
           mailbox: `${config.accountLabel} / ${o.mailbox}`,
         }))
       );
-    } catch (e) {
-      accountsFailed.push(config.accountLabel);
-      console.error(`IMAP fan-out failed for account "${config.accountLabel}": ${String(e)}`);
     }
   }
   return {

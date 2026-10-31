@@ -59776,6 +59776,7 @@ async function run(args, listMode, deps) {
       const omittedMessages = [];
       let totalMatched = 0;
       let totalExact = true;
+      let hasMore = false;
       const timedOutMailboxes = [];
       for (const [index, path3] of paths.entries()) {
         if (deps.signal?.aborted) {
@@ -59795,6 +59796,7 @@ async function run(args, listMode, deps) {
           const result = outcome;
           totalMatched += result.total;
           totalExact &&= result.totalExact;
+          hasMore ||= !result.totalExact || result.total > page.skip + page.take;
           fetched.push(...result.messages.map((message) => ({ message, path: path3 })));
           for (const uid of result.omitted) {
             omittedMessages.push({
@@ -59826,6 +59828,7 @@ async function run(args, listMode, deps) {
           const key = messageIdentity(entry);
           if (!unique.has(key)) unique.set(key, entry);
         }
+        hasMore ||= unique.size > offset + limit;
         ordered = [...unique.values()].slice(offset, offset + limit);
       }
       const rows = ordered.map(({ message, path: path3 }) => formatRow(message, cfg.accountLabel, path3));
@@ -59849,6 +59852,7 @@ Partial result. Could not search mailbox(es): ${failedMailboxes.map((path3) => `
           messages,
           count: 0,
           partial,
+          hasMore: hasMore || partial,
           failedMailboxes,
           failedMailboxReasons,
           omittedMessages,
@@ -59864,6 +59868,7 @@ Note: these IMAP IDs (imap:\u2026) work with get-message and the message mutatio
         messages,
         count: messages.length,
         partial,
+        hasMore: hasMore || partial,
         failedMailboxes,
         failedMailboxReasons,
         omittedMessages,
@@ -61231,8 +61236,49 @@ var init_imapClient = __esm({
 
 // src/services/smtpMailer.ts
 import { execFileSync } from "child_process";
+function smtpDeliveryNotice(result) {
+  if (result.deliveryUnknown) {
+    return "SMTP submission outcome is unknown. The provider may already have accepted the message. Do not resend automatically; verify this submission with the provider or recipients before retrying." + (result.error ? ` Details: ${result.error}` : "");
+  }
+  if (!result.partial) return "";
+  return `Partial SMTP submission. Accepted: ${result.accepted?.join(", ") || "not reported"}. Rejected: ${result.rejected?.join(", ") || "not reported"}. Do not resend to accepted recipients; reconsider only rejected recipients.`;
+}
+function recipientAddresses(value) {
+  if (!Array.isArray(value)) return void 0;
+  return value.flatMap((recipient) => {
+    if (typeof recipient === "string") return [recipient];
+    if (recipient && typeof recipient === "object" && "address" in recipient && typeof recipient.address === "string") {
+      return [recipient.address];
+    }
+    return [];
+  });
+}
 function errText2(e) {
   return e instanceof Error ? e.message : String(e);
+}
+function unknownSmtpResult(error2) {
+  const rejected = recipientAddresses(
+    error2 && typeof error2 === "object" && "rejected" in error2 ? error2.rejected : void 0
+  );
+  return {
+    success: false,
+    deliveryUnknown: true,
+    error: `SMTP submission outcome unknown: ${errText2(error2)}`,
+    ...rejected !== void 0 ? { rejected } : {}
+  };
+}
+function definiteSmtpFailure(error2) {
+  if (!error2 || typeof error2 !== "object") return false;
+  const { code, originalCode, command, responseCode } = error2;
+  if (code === "EAUTH" || code === "EDNS") return true;
+  if (["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"].includes(originalCode ?? code ?? "")) {
+    return true;
+  }
+  if (/^(?:AUTH(?: |$)|EHLO$|HELO$|STARTTLS$|MAIL FROM$|RCPT TO$)/.test(command ?? "")) {
+    return true;
+  }
+  if (command === "API" && (code === "EENVELOPE" || code === "EMESSAGE")) return true;
+  return command === "DATA" && typeof responseCode === "number" && responseCode >= 400 && responseCode < 600;
 }
 async function defaultAppendSentCopy(smtpUser, raw, smtpHost) {
   const { imapAppendSentCopy: imapAppendSentCopy2 } = await Promise.resolve().then(() => (init_imapClient(), imapClient_exports));
@@ -61367,21 +61413,30 @@ async function sendViaSmtp(opts, config, createTransport2 = nodemailer_default.c
       `SMTP plaintext explicitly enabled via ${SMTP_ENV.allowPlaintext}; credentials and message content may be exposed.`
     );
   }
-  const transporter = createTransport2({
-    host: cfg.host,
-    port: cfg.port,
-    secure: cfg.secure,
-    // Port 587/143-style configurations must not silently downgrade to
-    // plaintext when the server advertises no usable TLS upgrade.
-    requireTLS,
-    auth: { user: cfg.user, pass: cfg.pass }
-  });
-  const mailOptions = {
-    ...buildMailOptions(opts, from, attachments),
-    date: /* @__PURE__ */ new Date()
-  };
+  let transporter;
+  let submissionAttempted = false;
   try {
+    const mailOptions = {
+      ...buildMailOptions(opts, from, attachments),
+      date: /* @__PURE__ */ new Date()
+    };
+    transporter = createTransport2({
+      host: cfg.host,
+      port: cfg.port,
+      secure: cfg.secure,
+      // Port 587-style configurations must not silently downgrade to plaintext.
+      requireTLS,
+      auth: { user: cfg.user, pass: cfg.pass }
+    });
+    submissionAttempted = true;
     const info = await transporter.sendMail(mailOptions);
+    const accepted = recipientAddresses(info.accepted);
+    const rejected = recipientAddresses(info.rejected);
+    const delivery = {
+      ...accepted !== void 0 ? { accepted } : {},
+      ...rejected !== void 0 ? { rejected } : {},
+      ...accepted !== void 0 && rejected !== void 0 ? { partial: accepted.length > 0 && rejected.length > 0 } : {}
+    };
     let copyFields = {};
     try {
       const raw = await buildRawMime({
@@ -61393,16 +61448,25 @@ async function sendViaSmtp(opts, config, createTransport2 = nodemailer_default.c
     } catch (copyError) {
       copyFields = { sentCopy: false, sentCopyError: errText2(copyError) };
     }
-    return { success: true, messageId: info.messageId, ...copyFields };
+    return { success: true, messageId: info.messageId, ...delivery, ...copyFields };
   } catch (error2) {
+    if (submissionAttempted && !definiteSmtpFailure(error2)) return unknownSmtpResult(error2);
     const detail = error2 instanceof Error ? error2.message : String(error2);
+    const rejected = recipientAddresses(
+      error2 && typeof error2 === "object" && "rejected" in error2 ? error2.rejected : void 0
+    );
     const tlsHint = requireTLS ? ` STARTTLS is required for non-implicit TLS; to explicitly allow plaintext (not recommended), set ${SMTP_ENV.allowPlaintext}=1.` : "";
     return {
       success: false,
-      error: `SMTP send failed: ${detail}.${tlsHint}`
+      error: `SMTP send failed: ${detail}.${tlsHint}`,
+      ...rejected !== void 0 ? { rejected } : {}
     };
   } finally {
-    transporter.close();
+    try {
+      transporter?.close();
+    } catch (error2) {
+      console.error(`Failed to close SMTP transport: ${errText2(error2)}`);
+    }
   }
 }
 var SMTP_ENV;
@@ -61438,6 +61502,8 @@ import { parseArgs } from "util";
 var EX_USAGE = 64;
 var EX_NOINPUT = 66;
 var EX_CONFIG = 78;
+var EX_PARTIAL = 2;
+var EX_DELIVERY_UNKNOWN = 3;
 var USAGE = `apple-mail-send \u2014 send a clean email via SMTP (no Mail.app blockquote wrapping).
 
 Required:
@@ -61456,6 +61522,10 @@ Optional:
                         multipart/alternative)
   --attach <path>       Absolute path to a file to attach (repeatable)
   --help                Show this help
+
+Exit status 2 means partial SMTP submission. Do not retry the full recipient list;
+the output names accepted recipients and recipients to reconsider separately.
+Exit status 3 means the submission outcome is unknown. Verify it before retrying.
 
 SMTP connection comes from ${SMTP_ENV.host} / ${SMTP_ENV.user} (+ password via
 ${SMTP_ENV.password} or the macOS Keychain). Setup guide:
@@ -61522,26 +61592,37 @@ async function runCli(argv, deps = {}) {
     return EX_NOINPUT;
   }
   const attachments = values.attach?.length ? values.attach : void 0;
-  const result = await send(
-    {
-      from: values.from,
-      to: values.to,
-      cc: values.cc,
-      bcc: values.bcc,
-      replyTo: values["reply-to"],
-      subject: values.subject,
-      body,
-      htmlBody,
-      attachments
-    },
-    config
-  );
+  const result = await Promise.resolve().then(
+    () => send(
+      {
+        from: values.from,
+        to: values.to,
+        cc: values.cc,
+        bcc: values.bcc,
+        replyTo: values["reply-to"],
+        subject: values.subject,
+        body,
+        htmlBody,
+        attachments
+      },
+      config
+    )
+  ).catch(unknownSmtpResult);
+  if (result.deliveryUnknown) {
+    err(smtpDeliveryNotice(result));
+    return EX_DELIVERY_UNKNOWN;
+  }
   if (!result.success) {
     err(result.error ?? "SMTP send failed.");
     return 1;
   }
   const copyNote = result.sentCopy === true ? " (Sent-folder copy filed)" : result.sentCopy === false ? ` (Sent-folder copy NOT filed: ${result.sentCopyError ?? "unknown error"})` : "";
-  out(`sent to ${values.to.join(", ")} from ${values.from}${copyNote}`);
+  const accepted = result.accepted ?? values.to;
+  out(`sent to ${accepted.join(", ")} from ${values.from}${copyNote}`);
+  if (result.partial) {
+    err(smtpDeliveryNotice(result));
+    return EX_PARTIAL;
+  }
   return 0;
 }
 function isInvokedDirectly() {
@@ -61563,7 +61644,9 @@ if (isInvokedDirectly()) {
 }
 export {
   EX_CONFIG,
+  EX_DELIVERY_UNKNOWN,
   EX_NOINPUT,
+  EX_PARTIAL,
   EX_USAGE,
   runCli
 };

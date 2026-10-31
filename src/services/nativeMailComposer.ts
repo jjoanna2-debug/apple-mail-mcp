@@ -44,6 +44,7 @@ export function renderNativeAuthoredBody(body: string): string {
 const NATIVE_EDITOR_SCRIPT = String.raw`
 ObjC.import('AppKit');
 ObjC.import('ApplicationServices');
+ObjC.import('CoreGraphics');
 ObjC.import('CoreServices');
 ObjC.bindFunction('AEDeterminePermissionToAutomateTarget', ['int', ['void *', 'unsigned int', 'unsigned int', 'bool']]);
 var currentStage = 'startup', focusFailure = null, targetFailure = null;
@@ -53,6 +54,27 @@ function emit(record) {
   $.NSFileHandle.fileHandleWithStandardOutput.writeData(data);
 }
 function fail(code) { throw new Error(code); }
+function readSession() {
+  var reference = $.CGSessionCopyCurrentDictionary();
+  var dictionary = ObjC.deepUnwrap(ObjC.castRefToObject(reference));
+  if (dictionary === null || dictionary === undefined) return {available: false};
+  try {
+    // Use documented keys, not the private screen-lock key. These establish
+    // a console login session, not unlocked status or usable editor focus.
+    return {available: true,
+      onConsole: dictionary[ObjC.unwrap($.kCGSessionOnConsoleKey)],
+      loginDone: dictionary[ObjC.unwrap($.kCGSessionLoginDoneKey)]};
+  } finally { $.CFRelease(reference); }
+}
+function checkSession() {
+  var session;
+  try { session = readSession(); } catch (_) { fail('session-unknown'); }
+  if (!session.available) fail('session-unavailable');
+  if (typeof session.onConsole !== 'boolean' || typeof session.loginDone !== 'boolean')
+    fail('session-unknown');
+  if (!session.onConsole) fail('session-inactive');
+  if (!session.loginDone) fail('session-login');
+}
 function preflight() {
   if (!$.AXIsProcessTrusted()) fail('accessibility');
   ['com.apple.mail', 'com.apple.systemevents'].forEach(function (id) {
@@ -187,6 +209,8 @@ function snapshotClipboard(clipboard, token) {
   return recovery;
 }
 function main(input) {
+  stage('session');
+  checkSession();
   stage('preflight');
   preflight();
   if (input.operation === 'preflight') return;
@@ -205,6 +229,7 @@ function main(input) {
   var target = findMarkedComposer(process, input, checkMessage);
   var window = target.window, subject = target.subject, body = target.body;
   stage('focus');
+  checkSession();
   process.frontmost = true;
   window.attributes.byName('AXMain').value = true;
   for (var ready = 0; ready < 20; ready++) {
@@ -218,14 +243,19 @@ function main(input) {
   // Empty composers can place a floating Siri writing control at the body's
   // top-left corner. Focus at the center; Cmd+Up below sets insertion to start.
   var position = attr(body, 'AXPosition'), size = attr(body, 'AXSize');
-  if (!position || !size || size[0] < 20 || size[1] < 20 ||
-      !process.frontmost() || attr(window, 'AXMain') !== true) fail('focus');
+  focusFailure = !process.frontmost() ? 'foreground'
+    : attr(window, 'AXMain') !== true ? 'main-window'
+    : !position || !Number.isFinite(position[0]) || !Number.isFinite(position[1]) ? 'position'
+    : !size || !Number.isFinite(size[0]) || !Number.isFinite(size[1]) || size[0] < 20 || size[1] < 20 ? 'size' : null;
+  if (focusFailure) fail('focus');
   var point = {x: position[0] + size[0] / 2, y: position[1] + size[1] / 2};
+  checkSession();
   var down = $.CGEventCreateMouseEvent(null, 1, point, 0);
   var up = $.CGEventCreateMouseEvent(null, 2, point, 0);
   $.CGEventPost(0, down);
   $.CGEventPost(0, up);
   function checkFocus() {
+    checkSession();
     checkMessage();
     // AX updates are asynchronous. Retry the read-only coherent snapshot, not
     // clicks, key events, clipboard writes, or insertion.
@@ -259,6 +289,7 @@ function main(input) {
   var ownedCount = null;
   {
     stage('clipboard-write');
+    checkSession();
     var authored = $.NSPasteboardItem.alloc.init;
     if (!authored.setStringForType(input.html, $.NSPasteboardTypeHTML) ||
         !authored.setStringForType(input.body, $.NSPasteboardTypeString) ||
@@ -299,7 +330,7 @@ try {
   main(JSON.parse(text));
   JSON.stringify({success: true});
 } catch (error) {
-  var allowed = ['accessibility', 'automation', 'automation-unavailable', 'identity', 'target', 'focus', 'clipboard', 'restore', 'readback', 'paste-unavailable'];
+  var allowed = ['session-unavailable', 'session-inactive', 'session-login', 'session-unknown', 'accessibility', 'automation', 'automation-unavailable', 'identity', 'target', 'focus', 'clipboard', 'restore', 'readback', 'paste-unavailable'];
   JSON.stringify({success: false, code: allowed.indexOf(error.message) >= 0 ? error.message : 'bridge',
     stage: currentStage, focus: focusFailure || undefined, target: targetFailure || undefined,
     runtime: typeof error.errorNumber === 'number' ? error.errorNumber : undefined});
@@ -307,6 +338,14 @@ try {
 `;
 
 const ERRORS: Record<string, string> = {
+  "session-unavailable":
+    "Native Mail composition requires a Quartz GUI session; macOS reported none for this runtime. Keeping the Mac awake alone does not provide editor access. Nothing was sent.",
+  "session-inactive":
+    "Native Mail composition stopped because this runtime's user session is not the active console session. Nothing was sent.",
+  "session-login":
+    "Native Mail composition stopped because the GUI session has not completed login. Nothing was sent.",
+  "session-unknown":
+    "Native Mail composition could not verify the runtime's GUI session. This does not establish that the Mac is locked or that permission was denied. Nothing was sent.",
   accessibility:
     "Native Mail composition requires existing Accessibility permission for this runtime; no permission was requested.",
   automation:
@@ -316,7 +355,8 @@ const ERRORS: Record<string, string> = {
   identity: "Native Mail composition refused an unexpected message, subject, or sender.",
   target:
     "Native Mail composition could not identify exactly one marked composer and message body.",
-  focus: "Native Mail composition lost the verified composer or body focus; nothing was sent.",
+  focus:
+    "Native Mail composition could not verify the foreground composer and body focus. An awake Mac still needs an accessible editor; another app or an unavailable screen session can prevent focus. Nothing was sent.",
   clipboard:
     "Native Mail composition stopped because the clipboard could not be preserved or changed unexpectedly.",
   restore: "Native Mail composition could not restore the previous clipboard; nothing was sent.",
@@ -370,6 +410,7 @@ function runNativeEditor(payload: Record<string, unknown>): NativeEditorResult {
 function diagnostic(stage: unknown, runtime: unknown, focus?: unknown, target?: unknown): string {
   const stages = [
     "startup",
+    "session",
     "preflight",
     "identity",
     "target-window",

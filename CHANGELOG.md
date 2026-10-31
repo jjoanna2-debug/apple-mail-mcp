@@ -1,5 +1,55 @@
 ## [Unreleased]
 
+## [2.20.48] - 2026-10-31
+
+### Fixed
+
+- Parse reply address headers with the MIME address parser, preserving quoted
+  display names and groups without inventing extra SMTP recipients. Reject
+  computed mailbox addresses that Nodemailer would rewrite unsafely.
+- Preserve SMTP accepted/rejected recipient outcomes through send, reply,
+  forward, serial and CLI results. Partial submission is explicit, sends once,
+  retains the Sent copy result, and advises against resending to accepted
+  recipients. Lost SMTP acknowledgments report `deliveryUnknown` instead of
+  claiming nothing was sent; no automatic retry or fallback occurs. The CLI
+  uses exit status 2 for partial submission and 3 for an unknown outcome.
+- Require readable original text before an AppleScript-content forward adds
+  prose or attachments. Recover numeric-message plaintext from raw MIME when
+  possible; fail before mutation when rebuilding the quotation would lose it.
+- Apply AppleScript unread-only filters before pagination. Merge multi-account
+  results before applying the requested global offset, including mixed IMAP and
+  AppleScript sources. Refill duplicate-heavy prefixes before selecting the
+  page; report incomplete coverage if the 5,000-row prefix cap prevents an exact
+  result. Keep scoped deep pagination available.
+- Verify explicit account/mailbox membership before returning a disk-indexed
+  message. If the index cannot establish the requested scope, use the scoped
+  Mail lookup rather than returning an unrelated fast-path result.
+- Report bodies truncated at the 100,000-character index cap as incomplete
+  search coverage, retaining useful prefix matches. Rebuild earlier index
+  schemas so previously truncated rows cannot claim full coverage; doctor
+  reports the truncated count.
+- Register shutdown handling before asynchronous startup and cancel pending
+  IMAP IDLE connections. A standalone plugin now exits when its host closes
+  stdin even while the IMAP server withholds its greeting.
+- Serialize template updates across processes with fresh reads and atomic
+  private-file replacement. Concurrent saves retain distinct IDs, crashed
+  writers are recoverable, and persistence errors no longer claim success.
+- Resolve the attachment scratch directory through the allowed `/tmp` root,
+  retaining macOS canonical-path checks and working on Linux test runners.
+- Check the runtime's documented Quartz session before native-editor input and
+  report unavailable sessions and specific focus failures. Closed-lid operation
+  is distinguished from editor availability; no private lock-state API or
+  implicit transport fallback is used.
+
+### Verification and release
+
+- Test production schemas in the integration suite instead of stale copies.
+  Explicitly opt into live Mail checks with `RUN_MAIL_IT=1`; platform-only tests
+  remain enabled in macOS CI. `test:all` includes Node artifact/release tests.
+- Require successful complete CI for the exact main-branch revision on every
+  publication trigger. Validate the standalone Codex archive before npm publish.
+- Keep all plugin manifests, runtime pins and committed bundles synchronized.
+
 ## [2.20.46] - 2026-10-30
 
 ### Added

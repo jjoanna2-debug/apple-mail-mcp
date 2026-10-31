@@ -126,6 +126,15 @@ describe("mergeMessages", () => {
     expect(merged).toHaveLength(1);
     expect(merged[0].id).toBe("imap:A");
   });
+
+  it("applies the global offset after deduplication and chronological sorting", () => {
+    const newest = row({ id: "imap:new", messageId: "<same@host>", dateReceived: "2026-06-03" });
+    const duplicate = row({ ...newest, id: "imap:duplicate" });
+    const middle = row({ id: "10", subject: "Middle", dateReceived: "2026-06-02" });
+    const oldest = row({ id: "imap:old", subject: "Old", dateReceived: "2026-06-01" });
+    expect(mergeMessages([oldest, duplicate, newest], [middle], 1, 1)).toEqual([middle]);
+    expect(mergeMessages([oldest, duplicate, newest], [middle], 1, 2)).toEqual([oldest]);
+  });
 });
 
 describe("fanOutImapMessages", () => {
