@@ -2172,8 +2172,8 @@ describe("list-attachments reports DECODED sizes (#270)", () => {
     });
   });
 
-  it("fetch-attachment's 25 MiB pre-check uses the decoded size, not the encoded one", async () => {
-    // A ~20 MiB file is ~27 MiB as base64: under the limit decoded, over it encoded.
+  it("pre-checks exact decoded sizes but streams estimated encoded sizes", async () => {
+    // An RFC 2183 disposition size is exact. Encoded base64 size alone is not.
     let downloaded = false;
     const client: ImapClientLike = {
       ...makeClient([], {}),
@@ -2186,7 +2186,10 @@ describe("list-attachments reports DECODED sizes (#270)", () => {
               part: "2",
               type: "application/pdf",
               disposition: "attachment",
-              dispositionParameters: { filename: "big.pdf" },
+              dispositionParameters: {
+                filename: "big.pdf",
+                size: String(Math.ceil(MAX_IMAP_ATTACHMENT_BYTES * 1.1)),
+              },
               encoding: "base64",
               size: Math.ceil((MAX_IMAP_ATTACHMENT_BYTES * 1.1 * 4) / 3),
             },
@@ -2206,7 +2209,7 @@ describe("list-attachments reports DECODED sizes (#270)", () => {
       config: cfg,
       connect: async () => client,
     });
-    // 1.1 × the limit decoded is still over: refused before download
+    // Declared decoded size is over the limit, so no download is attempted.
     expect(r.success).toBe(false);
     expect(downloaded).toBe(false);
 
@@ -2223,7 +2226,7 @@ describe("list-attachments reports DECODED sizes (#270)", () => {
               disposition: "attachment",
               dispositionParameters: { filename: "big.pdf" },
               encoding: "base64",
-              size: MAX_IMAP_ATTACHMENT_BYTES + 1, // over encoded, ~19 MiB decoded
+              size: Math.ceil((MAX_IMAP_ATTACHMENT_BYTES * 1.1 * 4) / 3), // estimate is > limit; real payload is tiny
             },
           ],
         },
