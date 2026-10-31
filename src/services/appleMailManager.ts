@@ -28,6 +28,10 @@ import {
   rmSync,
   realpathSync,
   lstatSync,
+  openSync,
+  fstatSync,
+  readSync,
+  closeSync,
 } from "fs";
 import { resolve, sep, join } from "path";
 import { homedir } from "os";
@@ -6533,14 +6537,33 @@ ${this.errorEmit("              ")}
           error: `Attachment "${attachmentName}" not found on message ${id}`,
         };
       }
-      if (lstatSync(dest).size > MAX_FETCH_ATTACHMENT_BYTES) {
-        return { success: false, error: FETCH_ATTACHMENT_TOO_LARGE };
+      // Open once, without following a symlink, and validate the opened object.
+      // A pathname can be swapped between lstat and readFile; reading through
+      // the same descriptor also prevents a growing file from bypassing the cap.
+      const fd = openSync(dest, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+      try {
+        const stat = fstatSync(fd);
+        if (!stat.isFile()) return { success: false, error: "Attachment is not a regular file." };
+        if (stat.size > MAX_FETCH_ATTACHMENT_BYTES) {
+          return { success: false, error: FETCH_ATTACHMENT_TOO_LARGE };
+        }
+        const chunks: Buffer[] = [];
+        let total = 0;
+        while (total <= MAX_FETCH_ATTACHMENT_BYTES) {
+          const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, MAX_FETCH_ATTACHMENT_BYTES + 1 - total));
+          const count = readSync(fd, chunk, 0, chunk.length, null);
+          if (count === 0) break;
+          total += count;
+          if (total > MAX_FETCH_ATTACHMENT_BYTES) {
+            return { success: false, error: FETCH_ATTACHMENT_TOO_LARGE };
+          }
+          chunks.push(chunk.subarray(0, count));
+        }
+        const buf = Buffer.concat(chunks, total);
+        return { success: true, base64: buf.toString("base64"), bytes: buf.length };
+      } finally {
+        closeSync(fd);
       }
-      const buf = readFileSync(dest);
-      if (buf.length > MAX_FETCH_ATTACHMENT_BYTES) {
-        return { success: false, error: FETCH_ATTACHMENT_TOO_LARGE };
-      }
-      return { success: true, base64: buf.toString("base64"), bytes: buf.length };
     } catch (e) {
       return { success: false, error: e instanceof Error ? e.message : String(e) };
     } finally {
