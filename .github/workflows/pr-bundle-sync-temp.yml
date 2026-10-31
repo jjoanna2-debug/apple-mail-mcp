@@ -1,0 +1,35 @@
+name: Temporary PR bundle synchronization
+on:
+  push:
+    branches:
+      - fix/verified-mail-operations
+
+permissions:
+  contents: write
+
+jobs:
+  synchronize:
+    if: "!contains(github.event.head_commit.message, 'chore: sync generated build')"
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - name: Commit generated build
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f build/
+          if git diff --cached --quiet; then
+            echo "Build already synchronized"
+            exit 0
+          fi
+          git commit -m "chore: sync generated build"
+          git push origin HEAD:fix/verified-mail-operations
