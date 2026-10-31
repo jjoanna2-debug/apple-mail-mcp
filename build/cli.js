@@ -60880,8 +60880,9 @@ async function imapFetchAttachment(id, attachmentName, deps = {}, maxBytes = MAX
         error: `Attachment "${attachmentName}" not found on UID ${ref.uid}. Available: ${names}.`
       };
     }
-    const expected = decodedSizeWithoutBody(match).size;
-    if (expected > maxBytes) {
+    const estimate = decodedSizeWithoutBody(match);
+    const expected = estimate.size;
+    if (estimate.exact && expected > maxBytes) {
       return {
         success: false,
         error: `IMAP attachment "${attachmentName}" is ${expected} bytes; the maximum is ${maxBytes} bytes (${maxBytes / 1024 / 1024} MiB).${maxBytes < MAX_IMAP_ATTACHMENT_BYTES ? " Use save-attachment for larger files." : ""}`

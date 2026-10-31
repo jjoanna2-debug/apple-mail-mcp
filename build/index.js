@@ -68772,8 +68772,9 @@ async function imapFetchAttachment(id, attachmentName, deps = {}, maxBytes = MAX
         error: `Attachment "${attachmentName}" not found on UID ${ref.uid}. Available: ${names}.`
       };
     }
-    const expected = decodedSizeWithoutBody(match).size;
-    if (expected > maxBytes) {
+    const estimate = decodedSizeWithoutBody(match);
+    const expected = estimate.size;
+    if (estimate.exact && expected > maxBytes) {
       return {
         success: false,
         error: `IMAP attachment "${attachmentName}" is ${expected} bytes; the maximum is ${maxBytes} bytes (${maxBytes / 1024 / 1024} MiB).${maxBytes < MAX_IMAP_ATTACHMENT_BYTES ? " Use save-attachment for larger files." : ""}`
@@ -98899,7 +98900,6 @@ import {
   chmodSync as chmodSync2,
   existsSync as existsSync5,
   writeFileSync as writeFileSync4,
-  readFileSync as readFileSync4,
   readdirSync as readdirSync6,
   unlinkSync as unlinkSync4,
   copyFileSync,
@@ -98907,7 +98907,11 @@ import {
   mkdtempSync as mkdtempSync2,
   rmSync as rmSync2,
   realpathSync as realpathSync3,
-  lstatSync as lstatSync2
+  lstatSync as lstatSync2,
+  openSync as openSync3,
+  fstatSync as fstatSync2,
+  readSync as readSync2,
+  closeSync as closeSync3
 } from "fs";
 import { resolve as resolve5, sep as sep2, join as join10 } from "path";
 import { homedir as homedir7 } from "os";
@@ -105926,14 +105930,35 @@ ${this.errorEmit("              ")}
           error: `Attachment "${attachmentName}" not found on message ${id}`
         };
       }
-      if (lstatSync2(dest).size > MAX_FETCH_ATTACHMENT_BYTES) {
-        return { success: false, error: FETCH_ATTACHMENT_TOO_LARGE };
+      const fd = openSync3(
+        dest,
+        fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK
+      );
+      try {
+        const stat = fstatSync2(fd);
+        if (!stat.isFile()) return { success: false, error: "Attachment is not a regular file." };
+        if (stat.size > MAX_FETCH_ATTACHMENT_BYTES) {
+          return { success: false, error: FETCH_ATTACHMENT_TOO_LARGE };
+        }
+        const chunks = [];
+        let total = 0;
+        while (total <= MAX_FETCH_ATTACHMENT_BYTES) {
+          const chunk = Buffer.allocUnsafe(
+            Math.min(64 * 1024, MAX_FETCH_ATTACHMENT_BYTES + 1 - total)
+          );
+          const count = readSync2(fd, chunk, 0, chunk.length, null);
+          if (count === 0) break;
+          total += count;
+          if (total > MAX_FETCH_ATTACHMENT_BYTES) {
+            return { success: false, error: FETCH_ATTACHMENT_TOO_LARGE };
+          }
+          chunks.push(chunk.subarray(0, count));
+        }
+        const buf = Buffer.concat(chunks, total);
+        return { success: true, base64: buf.toString("base64"), bytes: buf.length };
+      } finally {
+        closeSync3(fd);
       }
-      const buf = readFileSync4(dest);
-      if (buf.length > MAX_FETCH_ATTACHMENT_BYTES) {
-        return { success: false, error: FETCH_ATTACHMENT_TOO_LARGE };
-      }
-      return { success: true, base64: buf.toString("base64"), bytes: buf.length };
     } catch (e) {
       return { success: false, error: e instanceof Error ? e.message : String(e) };
     } finally {
@@ -108696,7 +108721,7 @@ var ImapIdleWatcher = class {
 };
 
 // src/services/fileConfig.ts
-import { existsSync as existsSync6, readFileSync as readFileSync5 } from "fs";
+import { existsSync as existsSync6, readFileSync as readFileSync4 } from "fs";
 import { join as join11 } from "path";
 import { homedir as homedir8 } from "os";
 function fileConfigPath(env = process.env) {
@@ -108708,7 +108733,7 @@ function loadFileConfig(env = process.env, path3 = fileConfigPath(env)) {
   const applied = [];
   try {
     if (!existsSync6(path3)) return applied;
-    const parsed = JSON.parse(readFileSync5(path3, "utf8"));
+    const parsed = JSON.parse(readFileSync4(path3, "utf8"));
     if (!parsed || typeof parsed !== "object") return applied;
     for (const [k, v] of Object.entries(parsed)) {
       if (typeof v !== "string") continue;
