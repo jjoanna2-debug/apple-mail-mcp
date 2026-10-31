@@ -332,11 +332,25 @@ describe("registered read tool contracts", () => {
     }
   );
 
-  it("refills an AppleScript prefix shortened by composite-key deduplication", async () => {
+  it("preserves distinct same-timestamp AppleScript messages when paging", async () => {
+    configureImap(["A"]);
+    h.accountRows.B = [
+      { id: "1", subject: "B repeated subject", read: false, hour: 12 },
+      { id: "2", subject: "B repeated subject", read: false, hour: 12 },
+      { id: "3", subject: "Re: B repeated subject", read: false, hour: 12 },
+    ];
+    const result = await call("list-messages", { mailbox: "INBOX", offset: 1, limit: 1 });
+    expect(result.structuredContent?.messages).toEqual([
+      expect.objectContaining({ id: "2", subject: "B repeated subject", account: "B" }),
+    ]);
+    expect(result.structuredContent?.partial).toBe(false);
+  });
+
+  it("refills an AppleScript prefix containing repeated source identities", async () => {
     configureImap(["A"]);
     h.accountRows.B = [
       { id: "1", subject: "B duplicate", read: false, hour: 12 },
-      { id: "2", subject: "B duplicate", read: false, hour: 12 },
+      { id: "1", subject: "B duplicate", read: false, hour: 12 },
       { id: "3", subject: "B-11", read: false, hour: 11 },
     ];
     const result = await call("list-messages", { mailbox: "INBOX", offset: 1, limit: 1 });
@@ -347,7 +361,7 @@ describe("registered read tool contracts", () => {
   it("bounds duplicate-heavy AppleScript refills and explains the partial coverage", async () => {
     configureImap(["A"]);
     h.accountRows.B = Array.from({ length: 5_001 }, (_, i) => ({
-      id: String(i + 1),
+      id: i === 5_000 ? "2" : "1",
       subject: i === 5_000 ? "B-11" : "B duplicate",
       read: false,
       hour: i === 5_000 ? 11 : 12,

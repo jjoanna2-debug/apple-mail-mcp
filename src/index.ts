@@ -30,6 +30,7 @@ import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { integerNumber, registerToolWithContracts } from "@/utils/toolRegistration.js";
+import { mailToolAnnotations } from "@/utils/toolAnnotations.js";
 import {
   AppleMailManager,
   resolveAttachmentSaveTarget,
@@ -128,6 +129,12 @@ import {
 } from "@/services/imapMultiAccount.js";
 import type { Account, SearchDiagnostics, SearchResult } from "@/types.js";
 import { routeMessage } from "@/services/messageRouter.js";
+import {
+  MAX_FETCH_ATTACHMENT_BYTES,
+  MAX_FETCH_ATTACHMENT_BASE64_CHARS,
+  MAX_FETCH_ATTACHMENT_RESPONSE_BYTES,
+  FETCH_ATTACHMENT_TOO_LARGE,
+} from "@/utils/attachmentLimits.js";
 import { runDoctor, formatDoctorReport } from "@/tools/doctor.js";
 import { registerResourcesAndPrompts } from "@/tools/resourcesAndPrompts.js";
 import {
@@ -397,7 +404,7 @@ function withAccountListFailure(apple: AppleScan, failure: { error?: string } | 
  * IMAP config covers), concatenating their rows and merging diagnostics. The IMAP
  * fan-out already covers the IMAP accounts, so this avoids scanning them on the
  * AppleScript side — which, for an all-IMAP user, means ZERO AppleScript work and
- * therefore no reliance on the fragile composite dedup. `scan` runs one account.
+ * therefore no cross-backend identity reconciliation. `scan` runs one account.
  */
 function appleScanForAccounts(
   accounts: Account[],
@@ -457,8 +464,8 @@ function appleScanForAccounts(
  * Build the success response for a no-account, prefer-IMAP MERGED message list
  * (search-messages / list-messages — v2.6.0). Concatenates the IMAP fan-out rows
  * with the (already partitioned) AppleScript rows, de-dups (IMAP copy wins — a
- * safety net for heuristic misses + IMAP-vs-IMAP dupes, no longer load-bearing
- * for matched accounts), sorts newest-first, applies the global page, and preserves the
+ * safety net for repeated source identities and shared RFC Message-IDs), sorts
+ * newest-first, applies the global page, and preserves the
  * partial-coverage diagnostics (AppleScript scan + any failed IMAP fan-out).
  *
  * @param verb "matched" (search) or "listed" (list) — only affects empty-state text.
@@ -575,7 +582,12 @@ function registerTool<
     const token = REFERENCES_SCHEMA.unwrap().element;
     z.globalRegistry.add(token, { ...token.meta(), description: IN_REPLY_TO_SCHEMA.description });
   }
-  return registerToolWithContracts(server, name, config, cb);
+  return registerToolWithContracts(
+    server,
+    name,
+    { ...config, annotations: { ...mailToolAnnotations(name), ...config.annotations } },
+    cb
+  );
 }
 
 /**
@@ -2246,7 +2258,7 @@ registerTool(
   "delete-message",
   {
     description:
-      "Use when: deleting a single message by id (moves it to Trash).\nReturns: a confirmation that the message was deleted.\nDo not use when: deleting several at once (use batch-delete-messages) or just filing it away (use move-message).\nSafety: destructive — require explicit user confirmation, and search-messages/list-messages first to confirm you have the right id before deleting.",
+      "Use when: deleting a single message by id. An IMAP message outside the account's resolved Trash mailbox is moved there; one already in that Trash mailbox is permanently expunged. Numeric ids use Mail.app's delete behavior.\nReturns: a confirmation that the message was deleted.\nDo not use when: deleting several at once (use batch-delete-messages) or just filing it away (use move-message).\nSafety: destructive — an IMAP message already in Trash is permanently removed, not moved to Trash again. Require explicit user confirmation of this effect, and search-messages/list-messages first to confirm the exact message and source mailbox.",
     inputSchema: {
       id: MESSAGE_ID_SCHEMA,
     },
@@ -2356,7 +2368,7 @@ registerTool(
   "batch-delete-messages",
   {
     description:
-      "Use when: deleting multiple messages in one call (1–100 ids; moves them to Trash).\nReturns: counts of how many were deleted and how many failed, plus the distinct reasons for any failures.\nDo not use when: deleting just one (use delete-message) or filing messages away (use batch-move-messages).\nSafety: destructive and applies to many messages at once — require explicit user confirmation, and search-messages/list-messages first to confirm every id is correct before deleting. Pass sourceMailbox/sourceAccount (the mailbox you listed the ids from) so each numeric id is pinned to that mailbox; an id that matches in several mailboxes is refused, not guessed.",
+      "Use when: deleting multiple messages in one call (1–100 ids). IMAP messages outside their account's resolved Trash mailbox are moved there; those already in that Trash mailbox are permanently expunged. Numeric ids use Mail.app's delete behavior.\nReturns: counts of how many were deleted and how many failed, plus the distinct reasons for any failures.\nDo not use when: deleting just one (use delete-message) or filing messages away (use batch-move-messages).\nSafety: destructive and applies to many messages at once — IMAP messages already in Trash are permanently removed. Require explicit user confirmation of the effect for every source mailbox, and search-messages/list-messages first to confirm every id is correct. Pass sourceMailbox/sourceAccount (the mailbox you listed the ids from) so each numeric id is pinned to that mailbox; an id that matches in several mailboxes is refused, not guessed.",
     inputSchema: {
       ids: BATCH_IDS_SCHEMA,
       sourceMailbox: BATCH_SOURCE_MAILBOX_SCHEMA,
@@ -2639,7 +2651,7 @@ registerTool(
         return errorResponse(error instanceof Error ? error.message : String(error));
       }
       const r = await imapFetchAttachment(id, attachmentName);
-      if (!r.success || !r.base64) {
+      if (!r.success || typeof r.base64 !== "string") {
         return errorResponse(r.error || `Failed to fetch attachment "${attachmentName}"`);
       }
       writeFileSync(target.savedPath, Buffer.from(r.base64, "base64"), { flag: "wx", mode: 0o600 });
@@ -2670,7 +2682,7 @@ registerTool(
   "fetch-attachment",
   {
     description:
-      "Use when: retrieving an attachment's raw bytes inline as base64 (by message id and attachmentName), e.g. to process its contents without keeping a file.\nReturns: the attachment's bytes base64-encoded, with its size and (for IMAP) MIME type.\nDo not use when: you don't know the attachment name (use list-attachments first) or you just want it saved to disk (use save-attachment).\nSafety: leaves no file behind, but the AppleScript path is not disk-free — Mail writes the attachment into a private temp directory, which is read back and then deleted. Needs no Full Disk Access either way: Mail performs that write under the Automation grant, and this server never reads the mail store itself.",
+      "Use when: retrieving an attachment's raw bytes inline as base64 (by message id and attachmentName), e.g. to process its contents without keeping a file.\nReturns: up to 3 MiB of decoded attachment bytes, base64-encoded in text and structuredContent, with its size and (for IMAP) MIME type. Larger attachments are refused so the response fits the MCP stdio buffer; use save-attachment instead.\nDo not use when: you don't know the attachment name (use list-attachments first) or you want it saved to disk (use save-attachment).\nSafety: leaves no file behind, but the AppleScript path is not disk-free — Mail writes the attachment into a private temp directory, which is read back and then deleted. Needs no Full Disk Access either way: Mail performs that write under the Automation grant, and this server never reads the mail store itself.",
     inputSchema: {
       id: MESSAGE_ID_SCHEMA,
       attachmentName: z.string().min(1, "Attachment name is required"),
@@ -2686,24 +2698,41 @@ registerTool(
     // Returns the attachment bytes as base64 (B4) — the read counterpart to
     // sending inline base64 content. IMAP (I1) fetches the part directly; numeric
     // ids fall back to the AppleScript/MIME path.
-    if (id.startsWith("imap:")) {
-      const r = await imapFetchAttachment(id, attachmentName);
-      if (!r.success || !r.base64) {
-        return errorResponse(r.error || `Failed to fetch attachment "${attachmentName}"`);
+    const r = id.startsWith("imap:")
+      ? await imapFetchAttachment(id, attachmentName, {}, MAX_FETCH_ATTACHMENT_BYTES)
+      : mailManager.getAttachmentBase64(id, attachmentName);
+    if (!r.success || typeof r.base64 !== "string") {
+      const error = r.error || `Failed to fetch attachment "${attachmentName}"`;
+      // Server-provided attachment names can appear in errors too. Keep a
+      // failed lookup readable even when its metadata is unexpectedly large.
+      return errorResponse(error.length > 8192 ? `${error.slice(0, 8192)}… (truncated)` : error);
+    }
+    // Also guard the public boundary: backend metadata must never allow an
+    // oversized result to disappear at the client's stdio decoder.
+    if (
+      (r.bytes ?? 0) > MAX_FETCH_ATTACHMENT_BYTES ||
+      r.base64.length > MAX_FETCH_ATTACHMENT_BASE64_CHARS
+    ) {
+      return errorResponse(FETCH_ATTACHMENT_TOO_LARGE);
+    }
+    const response = successResponse(
+      `Fetched "${attachmentName}" (${r.bytes} bytes, base64-encoded below).\n\n${r.base64}`,
+      {
+        attachmentName,
+        bytes: r.bytes,
+        ...("mimeType" in r ? { mimeType: r.mimeType } : {}),
+        contentBase64: r.base64,
       }
-      return successResponse(
-        `Fetched "${attachmentName}" (${r.bytes} bytes, base64-encoded below).\n\n${r.base64}`,
-        { attachmentName, bytes: r.bytes, mimeType: r.mimeType, contentBase64: r.base64 }
+    );
+    // A bounded body alone is insufficient: filenames and MIME metadata are
+    // also untrusted, and JSON escaping can expand them. Measure the actual
+    // result, retaining headroom for the outer JSON-RPC envelope.
+    if (Buffer.byteLength(JSON.stringify(response), "utf8") > MAX_FETCH_ATTACHMENT_RESPONSE_BYTES) {
+      return errorResponse(
+        "Attachment metadata exceeds the inline response budget. Use save-attachment instead."
       );
     }
-    const r = mailManager.getAttachmentBase64(id, attachmentName);
-    if (!r.success) {
-      return errorResponse(r.error || `Failed to fetch attachment "${attachmentName}"`);
-    }
-    return successResponse(
-      `Fetched "${attachmentName}" (${r.bytes} bytes, base64-encoded below).\n\n${r.base64}`,
-      { attachmentName, bytes: r.bytes, contentBase64: r.base64 }
-    );
+    return response;
   }, "Error fetching attachment")
 );
 
@@ -4091,9 +4120,14 @@ registerTool(
   "get-sync-status",
   {
     description:
-      "Use when: checking whether Mail.app is running and actively syncing, e.g. to explain why new mail hasn't appeared yet.\nReturns: whether Mail.app is running and whether sync activity was detected.\nDo not use when: you need message counts (use get-mail-stats) or a full setup diagnosis (use doctor).",
+      "Use when: checking whether Mail.app is running and its configured account/mailbox counts.\nReturns: observed running state and counts, with syncState: unknown while Mail is running. This check cannot verify synchronization, pending uploads, or last-change timing; those measurements are omitted instead of guessed. It does not launch Mail.app.\nDo not use when: you need proof a message synced or was delivered, message counts (use get-mail-stats), or a full setup diagnosis (use doctor).",
     inputSchema: {},
     outputSchema: {
+      mailRunning: z.boolean().optional(),
+      accountCount: z.number().optional(),
+      mailboxCount: z.number().optional(),
+      syncState: z.enum(["unknown", "not-running", "unavailable"]).optional(),
+      reason: z.string().optional(),
       syncDetected: z.boolean().optional(),
       pendingUpload: z.number().optional(),
       recentActivity: z.boolean().optional(),
@@ -4110,9 +4144,18 @@ registerTool(
 
     if (status.error) {
       lines.push(`Status: ⚠️ ${status.error}`);
+      return errorResponse(lines.join("\n"), { ...status });
     } else {
-      lines.push(`Mail.app: ${status.recentActivity ? "Running" : "Not running"}`);
-      lines.push(`Sync active: ${status.syncDetected ? "Yes" : "No"}`);
+      lines.push(`Mail.app: ${status.mailRunning ? "Running" : "Not running"}`);
+      if (status.accountCount !== undefined)
+        lines.push(`Configured accounts: ${status.accountCount}`);
+      if (status.mailboxCount !== undefined) lines.push(`Mailboxes: ${status.mailboxCount}`);
+      lines.push(
+        status.syncState === "unknown"
+          ? "Sync activity: unknown"
+          : "Sync activity: Mail.app is not running"
+      );
+      if (status.reason) lines.push(status.reason);
     }
 
     return successResponse(lines.join("\n"), { ...status });

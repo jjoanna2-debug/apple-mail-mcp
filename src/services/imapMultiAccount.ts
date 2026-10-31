@@ -7,12 +7,11 @@
  *
  *   1. fan the IMAP query out over every configured IMAP account
  *      (`resolveImapConfigs()`), and
- *   2. ALSO run the existing AppleScript all-accounts path,
+ *   2. run AppleScript only for accounts no IMAP config covers,
  *
- * then merge the two, de-duplicating any message that appears in both backends
- * (e.g. a Gmail account that is both IMAP-configured AND visible to Mail.app's
- * AppleScript scan) and preferring the IMAP copy (it carries the round-trippable
- * `imap:` id that the mutation tools need).
+ * then merge the two, de-duplicating only when message/source identity agrees
+ * and preferring the IMAP copy when both rows carry the same RFC Message-ID.
+ * Matching subjects, senders and timestamps alone cannot establish identity.
  *
  * This module holds the backend-agnostic merge/dedup/sort + the per-account IMAP
  * fan-out so the three message-list sites (search-messages, get-thread,
@@ -47,21 +46,6 @@ function normalizeMessageId(row: MessageRow): string | undefined {
   return inner ? inner.toLowerCase() : undefined;
 }
 
-/**
- * Normalize a subject the same way the thread tool does for grouping: drop
- * leading Re:/Fwd: prefixes, collapse whitespace, lowercase. Kept local (and
- * deliberately simple) so the merge has no dependency cycle with the thread
- * module; exactness isn't required — this only feeds the fallback dedup key.
- */
-function normalizeSubjectForKey(subject: unknown): string {
-  const s = typeof subject === "string" ? subject : "";
-  return s
-    .replace(/^(\s*(re|fwd|fw|aw|sv|antw)\s*:\s*)+/i, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-}
-
 /** Epoch ms of the row's dateReceived (ISO string or Date), or 0 when absent. */
 function dateEpoch(row: MessageRow): number {
   const d = row.dateReceived;
@@ -74,30 +58,33 @@ function dateEpoch(row: MessageRow): number {
 }
 
 /**
- * Cross-backend dedup key for a message row.
+ * Identity-based dedup key for a message row.
  *
- *   - PREFER the normalized Message-ID when present (`mid:<id>`). It's the only
- *     globally-unique identity, so two IMAP accounts that both hold the very
- *     same message (rare, but possible with multi-delivery) collapse to one.
- *   - FALL BACK to `normalizedSubject|sender|dateReceivedEpoch` when no
- *     Message-ID is available. The AppleScript backend never exposes a
- *     Message-ID, so this composite is what actually dedups the common case: a
- *     Gmail account surfaced by BOTH the IMAP fan-out and the AppleScript
- *     all-accounts scan. The IMAP and AppleScript copies of one message share
- *     the same subject, sender, and received timestamp, so they collide here.
+ *   - Prefer the normalized RFC Message-ID when present (`mid:<id>`), retaining
+ *     the existing cross-account/cross-mailbox Message-ID dedup behavior.
+ *   - Otherwise use the full IMAP id, or an AppleScript id together with its
+ *     exact account and mailbox. Numeric ids alone are not globally unique.
+ *   - Without either identity, retain the row object as a unique key instead
+ *     of discarding a possibly distinct message based on matching metadata.
  *
- * Limitation (note for live testing): the composite key assumes the two backends
- * report the SAME received timestamp to the second. If Mail.app and the IMAP
- * server disagree on `dateReceived` (timezone/rounding), a message could escape
- * dedup and appear twice. Message-ID dedup (IMAP-vs-IMAP) is exact; the
- * composite is best-effort.
+ * Cross-backend copies with an RFC Message-ID on only one side remain separate:
+ * subject/sender/date similarities cannot prove they are the same message.
  */
-export function dedupKey(row: MessageRow): string {
+export function dedupKey(row: MessageRow): string | MessageRow {
   const mid = normalizeMessageId(row);
   if (mid) return `mid:${mid}`;
-  const subject = normalizeSubjectForKey(row.subject);
-  const sender = (typeof row.sender === "string" ? row.sender : "").trim().toLowerCase();
-  return `k:${subject}|${sender}|${dateEpoch(row)}`;
+  const id = typeof row.id === "string" ? row.id.trim() : "";
+  if (id.startsWith("imap:")) return `id:${id}`;
+  if (
+    /^\d+$/.test(id) &&
+    typeof row.account === "string" &&
+    row.account.length > 0 &&
+    typeof row.mailbox === "string" &&
+    row.mailbox.length > 0
+  ) {
+    return `id:${JSON.stringify([row.account, row.mailbox, id])}`;
+  }
+  return row;
 }
 
 /**
@@ -111,7 +98,7 @@ export function mergeMessages(
   limit: number,
   offset = 0
 ): MessageRow[] {
-  const byKey = new Map<string, MessageRow>();
+  const byKey = new Map<string | MessageRow, MessageRow>();
   // IMAP first so its copy wins; AppleScript only fills keys IMAP didn't supply.
   for (const r of imapRows) {
     const k = dedupKey(r);
@@ -274,7 +261,7 @@ export async function fanOutImapMessages(
 // Coverage is decided per (config, Mail-account) PAIR by configMatchesAccount.
 // - Message-list reads use partitionAccountsForCounts to run AppleScript ONLY
 //   for accounts no IMAP config covers (IMAP fans out over the configs), so an
-//   all-IMAP user runs zero AppleScript and never depends on composite dedup.
+//   all-IMAP user runs zero AppleScript and needs no cross-backend dedup.
 // - Count tools use planCountSources, which assigns each account EXACTLY ONE
 //   source (its matching config, else AppleScript) and adds any config that
 //   matched no account once — so even a heuristic MISS can't double-count.

@@ -184,6 +184,10 @@ function snapshotClipboard(clipboard, token) {
   var limit = ${MAX_NATIVE_CLIPBOARD_SNAPSHOT_BYTES};
   function bytes(value) { return Number($(JSON.stringify(value)).lengthOfBytesUsingEncoding($.NSUTF8StringEncoding)); }
   var originalCount = Number(clipboard.changeCount);
+  // Separate host conversations can run separate MCP processes. Never capture
+  // another composition's temporary clipboard as the user's original: nested
+  // restoration would strand that authored body after its owner has exited.
+  if (ObjC.unwrap(clipboard.stringForType('org.apple-mail-mcp.native-composition'))) fail('clipboard-busy');
   var recovery = {kind: 'clipboard-recovery', items: [], originalCount: originalCount, token: token};
   var size = bytes(recovery), items = clipboard.pasteboardItems;
   for (var i = 0; i < Number(items.count); i++) {
@@ -330,7 +334,7 @@ try {
   main(JSON.parse(text));
   JSON.stringify({success: true});
 } catch (error) {
-  var allowed = ['session-unavailable', 'session-inactive', 'session-login', 'session-unknown', 'accessibility', 'automation', 'automation-unavailable', 'identity', 'target', 'focus', 'clipboard', 'restore', 'readback', 'paste-unavailable'];
+  var allowed = ['session-unavailable', 'session-inactive', 'session-login', 'session-unknown', 'accessibility', 'automation', 'automation-unavailable', 'identity', 'target', 'focus', 'clipboard', 'clipboard-busy', 'restore', 'readback', 'paste-unavailable'];
   JSON.stringify({success: false, code: allowed.indexOf(error.message) >= 0 ? error.message : 'bridge',
     stage: currentStage, focus: focusFailure || undefined, target: targetFailure || undefined,
     runtime: typeof error.errorNumber === 'number' ? error.errorNumber : undefined});
@@ -359,6 +363,8 @@ const ERRORS: Record<string, string> = {
     "Native Mail composition could not verify the foreground composer and body focus. An awake Mac still needs an accessible editor; another app or an unavailable screen session can prevent focus. Nothing was sent.",
   clipboard:
     "Native Mail composition stopped because the clipboard could not be preserved or changed unexpectedly.",
+  "clipboard-busy":
+    "Native Mail composition found a clipboard owned by another composition. Nothing was pasted or sent. Let that operation finish before retrying; if its process has already exited, copy fresh clipboard content first.",
   restore: "Native Mail composition could not restore the previous clipboard; nothing was sent.",
   "paste-unavailable":
     "Mail's Paste command is unavailable for the verified editor; nothing was sent.",

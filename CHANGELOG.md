@@ -40,6 +40,29 @@
   report unavailable sessions and specific focus failures. Closed-lid operation
   is distinguished from editor availability; no private lock-state API or
   implicit transport fallback is used.
+- Bind numeric SMTP reply/forward source bytes to the account and mailbox that
+  actually supplied them, including unscoped requests. Verify that account owns
+  the configured From address; never send a Work original through an unrelated
+  Personal identity. A separate plaintext read must retain the same Message-ID.
+- Refuse a native clipboard snapshot while another composition marker is
+  present, preventing nested operations from restoring temporary prose as the
+  user's original clipboard.
+- Deduplicate merged reads by RFC Message-ID or scoped source identity, keeping
+  distinct messages that happen to share a sender, subject, and timestamp.
+  Preserve ambiguous copies when their shared identity cannot be established.
+- Return errors for failed explicit account/mailbox resource reads instead of
+  claiming that an unreadable account or mailbox list is empty.
+- Cap inline attachment fetches at 3 MiB on both backends, bound the complete
+  serialized response, and direct larger downloads to `save-attachment`.
+  Preserve the 25 MiB IMAP file-save limit and accept valid empty attachments.
+- Report only observed Mail running state and counts in `get-sync-status`.
+  Synchronization remains unknown; unavailable observations return errors, and
+  the check does not launch Mail or fabricate pending-upload and timing values.
+- Declare all four MCP effect annotations for every tool, including nondefault
+  write modes and externally consequential sends or enabled rules. Annotation
+  hints do not grant permissions or bypass host authorization.
+- Document existing permanent IMAP deletion for messages already in Trash,
+  and align the threat model with implemented controls and remaining risks.
 
 ### Verification and release
 

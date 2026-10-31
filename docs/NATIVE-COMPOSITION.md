@@ -95,6 +95,12 @@ clipboard is changed; process-output and recovery-input limits include room
 for protocol metadata. Recovery data stays in memory and is not logged or
 written to a temporary file. A newer clipboard owner is never overwritten.
 
+If the clipboard already carries another native-composition operation's marker,
+the new operation stops with a `clipboard-busy` diagnostic before taking a
+snapshot. This prevents a second operation from treating the first operation's
+temporary prose as the user's original clipboard. It is an ownership check,
+not a cross-process queue; keep concurrent composition requests serialized.
+
 New messages require an explicit `account`. Replies use the parent message's
 account and matching recipient identity, refusing an ambiguous sender. Native
 composition selects Mail.app even when SMTP is configured. Combining it with

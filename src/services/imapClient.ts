@@ -908,8 +908,8 @@ function structuredRow(m: ImapMessage, account: string, path: string): Record<st
       : {}),
     // Message-ID (when the envelope carries it) is the strongest cross-/intra-
     // backend dedup key for the multi-account merge (imapMultiAccount.ts). The
-    // AppleScript path does not expose it, so cross-backend dedup falls back to
-    // the subject|sender|date composite key.
+    // AppleScript path does not expose it. Rows without it keep their source
+    // identity; matching subject/sender/date values do not prove duplication.
     ...(env.messageId ? { messageId: env.messageId } : {}),
   };
 }
@@ -3641,7 +3641,8 @@ export async function imapListAttachments(
 export async function imapFetchAttachment(
   id: string,
   attachmentName: string,
-  deps: ImapDeps = {}
+  deps: ImapDeps = {},
+  maxBytes = MAX_IMAP_ATTACHMENT_BYTES
 ): Promise<{
   success: boolean;
   base64?: string;
@@ -3670,15 +3671,15 @@ export async function imapFetchAttachment(
     // it and would refuse files that fit. Estimate only; the stream cut-off
     // below stays the hard guard.
     const expected = decodedSizeWithoutBody(match).size;
-    if (expected > MAX_IMAP_ATTACHMENT_BYTES) {
+    if (expected > maxBytes) {
       return {
         success: false,
-        error: `IMAP attachment "${attachmentName}" is ${expected} bytes; the maximum is ${MAX_IMAP_ATTACHMENT_BYTES} bytes (25 MiB).`,
+        error: `IMAP attachment "${attachmentName}" is ${expected} bytes; the maximum is ${maxBytes} bytes (${maxBytes / 1024 / 1024} MiB).${maxBytes < MAX_IMAP_ATTACHMENT_BYTES ? " Use save-attachment for larger files." : ""}`,
       };
     }
     try {
       const dl = await client.download(String(ref.uid), match.part, { uid: true });
-      const buf = await streamToBuffer(dl.content, MAX_IMAP_ATTACHMENT_BYTES);
+      const buf = await streamToBuffer(dl.content, maxBytes);
       return {
         success: true,
         base64: buf.toString("base64"),
@@ -3686,7 +3687,10 @@ export async function imapFetchAttachment(
         mimeType: match.mimeType,
       };
     } catch (e) {
-      return { success: false, error: `IMAP attachment fetch failed: ${errText(e)}` };
+      return {
+        success: false,
+        error: `IMAP attachment fetch failed: ${errText(e)}${maxBytes < MAX_IMAP_ATTACHMENT_BYTES ? " Use save-attachment for larger files." : ""}`,
+      };
     }
   });
 }

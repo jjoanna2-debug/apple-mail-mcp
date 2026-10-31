@@ -27,7 +27,12 @@ export interface ComposeDeps {
     "getRawSource" | "getMessageContent" | "replyToMessage" | "forwardMessage"
   > &
     // Optional so test doubles needn't stub it; the real manager always has it.
-    Partial<Pick<AppleMailManager, "consumeLastMessageLookupError" | "listAccountsChecked">>;
+    Partial<
+      Pick<
+        AppleMailManager,
+        "consumeLastMessageLookupError" | "listAccountsChecked" | "getRawSourceWithLocation"
+      >
+    >;
   imapSource: (id: string) => Promise<ImapMessageSource>;
   numericId: (id: string) => Promise<{ numericId?: string; error?: string }>;
   smtpConfigured: () => boolean;
@@ -82,9 +87,28 @@ async function readOriginal(deps: ComposeDeps, id: string, cfg?: SmtpConfig, sco
     if (source.subject !== undefined) original.subject = source.subject;
     return { original, plainText: extractTextBody(source.raw) };
   }
-  const raw = scope
-    ? deps.mail.getRawSource(id, scope, { requireScopedLocation: true })
-    : deps.mail.getRawSource(id);
+  let sourceScope = scope;
+  let raw: string | null;
+  if (cfg && !sourceScope) {
+    // A numeric id does not carry its account. Read source + location together
+    // through the strict resolver, then apply the same actual-From check as an
+    // explicit scope. Never infer ownership from To/From headers or pick the
+    // first metadata hit before the ambiguity check has run.
+    const source = deps.mail.getRawSourceWithLocation?.(id);
+    if (!source) {
+      const why = deps.mail.consumeLastMessageLookupError?.();
+      throw new Error(
+        `Cannot read the original message source${why ? ` (${why})` : ""}. Its account and mailbox must be verified before SMTP composition. Re-list the intended mailbox or supply its account and mailbox.`
+      );
+    }
+    sourceScope = { account: source.account, mailbox: source.mailbox };
+    requireScopedSmtpIdentity(deps, sourceScope, cfg);
+    raw = source.raw;
+  } else {
+    raw = sourceScope
+      ? deps.mail.getRawSource(id, sourceScope, { requireScopedLocation: true })
+      : deps.mail.getRawSource(id);
+  }
   if (!raw) {
     // Say WHY when the lookup knows (#270): a bounded scan that skipped a large
     // mailbox, an ambiguous id, a timeout — each has its own remedy.
@@ -93,11 +117,11 @@ async function readOriginal(deps: ComposeDeps, id: string, cfg?: SmtpConfig, sco
       `Cannot read the original message source${why ? ` (${why})` : ""}. Re-list the intended mailbox and retry with its message id.`
     );
   }
-  const content = scope
-    ? deps.mail.getMessageContent(id, false, scope, { requireScopedLocation: true })
+  const content = sourceScope
+    ? deps.mail.getMessageContent(id, false, sourceScope, { requireScopedLocation: true })
     : deps.mail.getMessageContent(id);
   const original = parseOriginalHeaders(raw);
-  if (scope) {
+  if (sourceScope) {
     // The source and Mail's plain-text property are read separately. If the
     // numeric id was reused between reads, never combine different messages.
     const sourceId = original.messageId?.trim().replace(/^<|>$/g, "");

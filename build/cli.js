@@ -13136,12 +13136,15 @@ function decodeInlineAttachment(contentBase64) {
   }
   return content;
 }
-var MAX_INLINE_ATTACHMENT_BYTES, MAX_IMAP_ATTACHMENT_BYTES, MAX_INLINE_ATTACHMENT_BASE64_CHARS, MAX_INLINE_ATTACHMENT_BASE64_INPUT_CHARS;
+var MAX_INLINE_ATTACHMENT_BYTES, MAX_IMAP_ATTACHMENT_BYTES, MAX_FETCH_ATTACHMENT_BYTES, MAX_FETCH_ATTACHMENT_BASE64_CHARS, MAX_FETCH_ATTACHMENT_RESPONSE_BYTES, MAX_INLINE_ATTACHMENT_BASE64_CHARS, MAX_INLINE_ATTACHMENT_BASE64_INPUT_CHARS;
 var init_attachmentLimits = __esm({
   "src/utils/attachmentLimits.ts"() {
     "use strict";
     MAX_INLINE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
     MAX_IMAP_ATTACHMENT_BYTES = MAX_INLINE_ATTACHMENT_BYTES;
+    MAX_FETCH_ATTACHMENT_BYTES = 3 * 1024 * 1024;
+    MAX_FETCH_ATTACHMENT_BASE64_CHARS = Math.ceil(MAX_FETCH_ATTACHMENT_BYTES / 3) * 4;
+    MAX_FETCH_ATTACHMENT_RESPONSE_BYTES = 9 * 1024 * 1024;
     MAX_INLINE_ATTACHMENT_BASE64_CHARS = Math.ceil(MAX_INLINE_ATTACHMENT_BYTES / 3) * 4;
     MAX_INLINE_ATTACHMENT_BASE64_INPUT_CHARS = MAX_INLINE_ATTACHMENT_BASE64_CHARS * 2;
   }
@@ -59458,8 +59461,8 @@ function structuredRow(m, account, path3) {
     } : {},
     // Message-ID (when the envelope carries it) is the strongest cross-/intra-
     // backend dedup key for the multi-account merge (imapMultiAccount.ts). The
-    // AppleScript path does not expose it, so cross-backend dedup falls back to
-    // the subject|sender|date composite key.
+    // AppleScript path does not expose it. Rows without it keep their source
+    // identity; matching subject/sender/date values do not prove duplication.
     ...env.messageId ? { messageId: env.messageId } : {}
   };
 }
@@ -60860,7 +60863,7 @@ async function imapListAttachments(id, deps = {}) {
     return { success: true, attachments };
   });
 }
-async function imapFetchAttachment(id, attachmentName, deps = {}) {
+async function imapFetchAttachment(id, attachmentName, deps = {}, maxBytes = MAX_IMAP_ATTACHMENT_BYTES) {
   const ref = decodeImapId(id);
   if (!ref) return { success: false, error: `Not an IMAP message id: "${id}".` };
   return withMailbox(ref.path, depsForMessageRef(ref, deps), async (client) => {
@@ -60878,15 +60881,15 @@ async function imapFetchAttachment(id, attachmentName, deps = {}) {
       };
     }
     const expected = decodedSizeWithoutBody(match).size;
-    if (expected > MAX_IMAP_ATTACHMENT_BYTES) {
+    if (expected > maxBytes) {
       return {
         success: false,
-        error: `IMAP attachment "${attachmentName}" is ${expected} bytes; the maximum is ${MAX_IMAP_ATTACHMENT_BYTES} bytes (25 MiB).`
+        error: `IMAP attachment "${attachmentName}" is ${expected} bytes; the maximum is ${maxBytes} bytes (${maxBytes / 1024 / 1024} MiB).${maxBytes < MAX_IMAP_ATTACHMENT_BYTES ? " Use save-attachment for larger files." : ""}`
       };
     }
     try {
       const dl = await client.download(String(ref.uid), match.part, { uid: true });
-      const buf = await streamToBuffer(dl.content, MAX_IMAP_ATTACHMENT_BYTES);
+      const buf = await streamToBuffer(dl.content, maxBytes);
       return {
         success: true,
         base64: buf.toString("base64"),
@@ -60894,7 +60897,10 @@ async function imapFetchAttachment(id, attachmentName, deps = {}) {
         mimeType: match.mimeType
       };
     } catch (e) {
-      return { success: false, error: `IMAP attachment fetch failed: ${errText(e)}` };
+      return {
+        success: false,
+        error: `IMAP attachment fetch failed: ${errText(e)}${maxBytes < MAX_IMAP_ATTACHMENT_BYTES ? " Use save-attachment for larger files." : ""}`
+      };
     }
   });
 }

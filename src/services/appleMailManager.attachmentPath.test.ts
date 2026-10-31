@@ -104,6 +104,20 @@ describe("attachment path boundaries", () => {
     expect(existsSync(save.mock.calls[0][2])).toBe(false);
   });
 
+  it("refuses an oversized native inline attachment and cleans up the staged file", () => {
+    const mgr = new AppleMailManager();
+    const save = vi.spyOn(mgr, "saveAttachment").mockImplementation((_id, name, directory) => {
+      writeFileSync(join(directory, name), Buffer.alloc(3 * 1024 * 1024 + 1));
+      return true;
+    });
+    const result = mgr.getAttachmentBase64("1", "large.bin");
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("3 MiB");
+    expect(result.error).toContain("save-attachment");
+    expect(result.base64).toBeUndefined();
+    expect(existsSync(save.mock.calls[0][2])).toBe(false);
+  });
+
   it("creates MIME fallback files with owner-only permissions", () => {
     const root = mkdtempSync(join(homedir(), ".apple-mail-mcp-test-"));
     cleanup.push(root);

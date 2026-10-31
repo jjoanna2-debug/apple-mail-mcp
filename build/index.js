@@ -65761,12 +65761,16 @@ function decodeInlineAttachment(contentBase64) {
   }
   return content;
 }
-var MAX_INLINE_ATTACHMENT_BYTES, MAX_IMAP_ATTACHMENT_BYTES, MAX_INLINE_ATTACHMENT_BASE64_CHARS, MAX_INLINE_ATTACHMENT_BASE64_INPUT_CHARS;
+var MAX_INLINE_ATTACHMENT_BYTES, MAX_IMAP_ATTACHMENT_BYTES, MAX_FETCH_ATTACHMENT_BYTES, MAX_FETCH_ATTACHMENT_BASE64_CHARS, MAX_FETCH_ATTACHMENT_RESPONSE_BYTES, FETCH_ATTACHMENT_TOO_LARGE, MAX_INLINE_ATTACHMENT_BASE64_CHARS, MAX_INLINE_ATTACHMENT_BASE64_INPUT_CHARS;
 var init_attachmentLimits = __esm({
   "src/utils/attachmentLimits.ts"() {
     "use strict";
     MAX_INLINE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
     MAX_IMAP_ATTACHMENT_BYTES = MAX_INLINE_ATTACHMENT_BYTES;
+    MAX_FETCH_ATTACHMENT_BYTES = 3 * 1024 * 1024;
+    MAX_FETCH_ATTACHMENT_BASE64_CHARS = Math.ceil(MAX_FETCH_ATTACHMENT_BYTES / 3) * 4;
+    MAX_FETCH_ATTACHMENT_RESPONSE_BYTES = 9 * 1024 * 1024;
+    FETCH_ATTACHMENT_TOO_LARGE = "Attachment exceeds the 3 MiB inline response limit. Use save-attachment to write it to an allowed directory instead.";
     MAX_INLINE_ATTACHMENT_BASE64_CHARS = Math.ceil(MAX_INLINE_ATTACHMENT_BYTES / 3) * 4;
     MAX_INLINE_ATTACHMENT_BASE64_INPUT_CHARS = MAX_INLINE_ATTACHMENT_BASE64_CHARS * 2;
   }
@@ -67349,8 +67353,8 @@ function structuredRow(m, account, path3) {
     } : {},
     // Message-ID (when the envelope carries it) is the strongest cross-/intra-
     // backend dedup key for the multi-account merge (imapMultiAccount.ts). The
-    // AppleScript path does not expose it, so cross-backend dedup falls back to
-    // the subject|sender|date composite key.
+    // AppleScript path does not expose it. Rows without it keep their source
+    // identity; matching subject/sender/date values do not prove duplication.
     ...env.messageId ? { messageId: env.messageId } : {}
   };
 }
@@ -68751,7 +68755,7 @@ async function imapListAttachments(id, deps = {}) {
     return { success: true, attachments };
   });
 }
-async function imapFetchAttachment(id, attachmentName, deps = {}) {
+async function imapFetchAttachment(id, attachmentName, deps = {}, maxBytes = MAX_IMAP_ATTACHMENT_BYTES) {
   const ref = decodeImapId(id);
   if (!ref) return { success: false, error: `Not an IMAP message id: "${id}".` };
   return withMailbox(ref.path, depsForMessageRef(ref, deps), async (client) => {
@@ -68769,15 +68773,15 @@ async function imapFetchAttachment(id, attachmentName, deps = {}) {
       };
     }
     const expected = decodedSizeWithoutBody(match).size;
-    if (expected > MAX_IMAP_ATTACHMENT_BYTES) {
+    if (expected > maxBytes) {
       return {
         success: false,
-        error: `IMAP attachment "${attachmentName}" is ${expected} bytes; the maximum is ${MAX_IMAP_ATTACHMENT_BYTES} bytes (25 MiB).`
+        error: `IMAP attachment "${attachmentName}" is ${expected} bytes; the maximum is ${maxBytes} bytes (${maxBytes / 1024 / 1024} MiB).${maxBytes < MAX_IMAP_ATTACHMENT_BYTES ? " Use save-attachment for larger files." : ""}`
       };
     }
     try {
       const dl = await client.download(String(ref.uid), match.part, { uid: true });
-      const buf = await streamToBuffer(dl.content, MAX_IMAP_ATTACHMENT_BYTES);
+      const buf = await streamToBuffer(dl.content, maxBytes);
       return {
         success: true,
         base64: buf.toString("base64"),
@@ -68785,7 +68789,10 @@ async function imapFetchAttachment(id, attachmentName, deps = {}) {
         mimeType: match.mimeType
       };
     } catch (e) {
-      return { success: false, error: `IMAP attachment fetch failed: ${errText2(e)}` };
+      return {
+        success: false,
+        error: `IMAP attachment fetch failed: ${errText2(e)}${maxBytes < MAX_IMAP_ATTACHMENT_BYTES ? " Use save-attachment for larger files." : ""}`
+      };
     }
   });
 }
@@ -98804,6 +98811,87 @@ function integerNumber() {
   return external_exports.number().refine(Number.isInteger, { message: "Expected integer" }).meta({ type: "integer" });
 }
 
+// src/utils/toolAnnotations.ts
+var READ = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false
+};
+var ADD = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: false
+};
+var CHANGE = { ...ADD, destructiveHint: true };
+var SET = { ...CHANGE, idempotentHint: true };
+var SEND = { ...CHANGE, openWorldHint: true };
+var MAIL_TOOL_ANNOTATIONS = {
+  "search-messages": READ,
+  "get-message": READ,
+  "get-message-headers": READ,
+  // savePath creates a persistent file; the inline-only mode cannot make the
+  // whole tool read-only. Existing files are never overwritten.
+  "get-message-rfc822": ADD,
+  "get-thread": READ,
+  "list-messages": READ,
+  "send-email": SEND,
+  "send-serial-email": SEND,
+  "create-draft": ADD,
+  // Both can send, including by default, even though send=false creates drafts.
+  "reply-to-message": SEND,
+  "forward-message": SEND,
+  "mark-as-read": SET,
+  "mark-as-unread": SET,
+  "flag-message": SET,
+  "unflag-message": SET,
+  "delete-message": CHANGE,
+  "move-message": CHANGE,
+  "batch-delete-messages": CHANGE,
+  "batch-move-messages": CHANGE,
+  "batch-mark-as-read": SET,
+  "batch-mark-as-unread": SET,
+  "batch-flag-messages": SET,
+  "batch-unflag-messages": SET,
+  "resolve-message-id": READ,
+  "list-attachments": READ,
+  "save-attachment": ADD,
+  "fetch-attachment": READ,
+  "list-mailboxes": READ,
+  "get-unread-count": READ,
+  "create-mailbox": ADD,
+  "delete-mailbox": CHANGE,
+  "rename-mailbox": CHANGE,
+  "list-smart-mailboxes": READ,
+  "create-smart-mailbox": ADD,
+  "delete-smart-mailbox": CHANGE,
+  // dryRun=false writes, so the default preview does not make this read-only.
+  "create-newsletter-smart-mailboxes": ADD,
+  "list-accounts": READ,
+  "list-rules": READ,
+  // An existing rule may forward or reply externally, beyond the restricted
+  // actions accepted by create-rule. Enabling it can activate those effects.
+  "enable-rule": { ...SET, openWorldHint: true },
+  "disable-rule": SET,
+  "create-rule": CHANGE,
+  "delete-rule": CHANGE,
+  "search-contacts": READ,
+  // With id, save-template replaces existing content; without id it adds one.
+  "save-template": CHANGE,
+  "list-templates": READ,
+  "get-template": READ,
+  "delete-template": CHANGE,
+  "use-template": ADD,
+  "health-check": READ,
+  doctor: READ,
+  "get-mail-stats": READ,
+  "get-sync-status": READ
+};
+function mailToolAnnotations(name2) {
+  return { ...Object.hasOwn(MAIL_TOOL_ANNOTATIONS, name2) ? MAIL_TOOL_ANNOTATIONS[name2] : SEND };
+}
+
 // src/services/appleMailManager.ts
 import { spawnSync as spawnSync4 } from "child_process";
 import {
@@ -99461,6 +99549,9 @@ function preflightAttachments(attachments) {
   }
 }
 
+// src/services/appleMailManager.ts
+init_attachmentLimits();
+
 // src/utils/senderAccount.ts
 function extractAddress(sender) {
   const angle = /<([^<>]*)>\s*$/.exec(sender);
@@ -99738,6 +99829,10 @@ function snapshotClipboard(clipboard, token) {
   var limit = ${MAX_NATIVE_CLIPBOARD_SNAPSHOT_BYTES};
   function bytes(value) { return Number($(JSON.stringify(value)).lengthOfBytesUsingEncoding($.NSUTF8StringEncoding)); }
   var originalCount = Number(clipboard.changeCount);
+  // Separate host conversations can run separate MCP processes. Never capture
+  // another composition's temporary clipboard as the user's original: nested
+  // restoration would strand that authored body after its owner has exited.
+  if (ObjC.unwrap(clipboard.stringForType('org.apple-mail-mcp.native-composition'))) fail('clipboard-busy');
   var recovery = {kind: 'clipboard-recovery', items: [], originalCount: originalCount, token: token};
   var size = bytes(recovery), items = clipboard.pasteboardItems;
   for (var i = 0; i < Number(items.count); i++) {
@@ -99884,7 +99979,7 @@ try {
   main(JSON.parse(text));
   JSON.stringify({success: true});
 } catch (error) {
-  var allowed = ['session-unavailable', 'session-inactive', 'session-login', 'session-unknown', 'accessibility', 'automation', 'automation-unavailable', 'identity', 'target', 'focus', 'clipboard', 'restore', 'readback', 'paste-unavailable'];
+  var allowed = ['session-unavailable', 'session-inactive', 'session-login', 'session-unknown', 'accessibility', 'automation', 'automation-unavailable', 'identity', 'target', 'focus', 'clipboard', 'clipboard-busy', 'restore', 'readback', 'paste-unavailable'];
   JSON.stringify({success: false, code: allowed.indexOf(error.message) >= 0 ? error.message : 'bridge',
     stage: currentStage, focus: focusFailure || undefined, target: targetFailure || undefined,
     runtime: typeof error.errorNumber === 'number' ? error.errorNumber : undefined});
@@ -99902,6 +99997,7 @@ var ERRORS = {
   target: "Native Mail composition could not identify exactly one marked composer and message body.",
   focus: "Native Mail composition could not verify the foreground composer and body focus. An awake Mac still needs an accessible editor; another app or an unavailable screen session can prevent focus. Nothing was sent.",
   clipboard: "Native Mail composition stopped because the clipboard could not be preserved or changed unexpectedly.",
+  "clipboard-busy": "Native Mail composition found a clipboard owned by another composition. Nothing was pasted or sent. Let that operation finish before retrying; if its process has already exited, copy fresh clipboard content first.",
   restore: "Native Mail composition could not restore the previous clipboard; nothing was sent.",
   "paste-unavailable": "Mail's Paste command is unavailable for the verified editor; nothing was sent.",
   readback: "Native Mail composition could not verify the inserted prose; nothing was sent.",
@@ -104105,6 +104201,37 @@ ${indent}end try${this.sanitizeFragment("_uacct", indent)}${this.sanitizeFragmen
     return this.resolveById(id, "return source of msg", hint, options);
   }
   /**
+   * Read a numeric message's source and owning location in the same lookup.
+   * SMTP replies/forwards need this binding before choosing their sender; a
+   * separate metadata lookup could resolve a different reused numeric id.
+   * Preserve the strict resolver's ambiguity checks and remembered-location
+   * behavior. An On My Mac result has its explicit local-store label, never an
+   * inferred sender account from the message's untrusted address headers.
+   */
+  getRawSourceWithLocation(id) {
+    this.lastMessageLookupError = void 0;
+    const output2 = this.resolveById(
+      id,
+      `set _sourceMailbox to ""
+       ${mailboxPathFragment("_hitMb", "_sourceMailbox")}
+       if _hitAcct contains "${FIELD_SEP}" or _sourceMailbox contains "${FIELD_SEP}" then return "invalid-source-scope"
+       return _hitAcct & "${FIELD_SEP}" & _sourceMailbox & "${FIELD_SEP}" & (source of msg)`,
+      void 0
+    );
+    if (output2 === null) return null;
+    const first = output2.indexOf(FIELD_SEP);
+    const second = output2.indexOf(FIELD_SEP, first + 1);
+    if (first < 1 || second <= first + 1 || !output2.slice(second + 1).trim()) {
+      this.lastMessageLookupError = "Mail could not return a readable source with its account and mailbox.";
+      return null;
+    }
+    return {
+      account: output2.slice(0, first),
+      mailbox: output2.slice(first + 1, second),
+      raw: output2.slice(second + 1)
+    };
+  }
+  /**
    * List messages in a mailbox.
    *
    * @param mailbox - Mailbox to list from (default: INBOX)
@@ -105799,7 +105926,13 @@ ${this.errorEmit("              ")}
           error: `Attachment "${attachmentName}" not found on message ${id}`
         };
       }
+      if (lstatSync2(dest).size > MAX_FETCH_ATTACHMENT_BYTES) {
+        return { success: false, error: FETCH_ATTACHMENT_TOO_LARGE };
+      }
       const buf = readFileSync4(dest);
+      if (buf.length > MAX_FETCH_ATTACHMENT_BYTES) {
+        return { success: false, error: FETCH_ATTACHMENT_TOO_LARGE };
+      }
       return { success: true, base64: buf.toString("base64"), bytes: buf.length };
     } catch (e) {
       return { success: false, error: e instanceof Error ? e.message : String(e) };
@@ -106977,30 +107110,15 @@ ${actionStmts.join("\n")}
     };
   }
   /**
-   * Get sync status for Mail.app.
-   *
-   * Checks for sync activity indicators like:
-   * - Activity monitor status
-   * - Network activity status
-   * - Background refresh indicators
+   * Observe whether Mail.app is running and its configured account/mailbox
+   * counts. These are not evidence of synchronization, pending uploads, or a
+   * recent database change: the AppleScript interface exposes none of those
+   * measurements here. Preserve that uncertainty instead of inventing zeros.
    *
    * @returns Sync status information
    */
   getSyncStatus() {
-    const script = buildAppLevelScript(`
-      set syncInfo to ""
-
-      -- Check if Mail.app is running
-      tell application "System Events"
-        set mailRunning to (name of processes) contains "Mail"
-      end tell
-
-      if not mailRunning then
-        return "not_running"
-      end if
-
-      -- Check for background activity by looking at message counts changing
-      -- This is a proxy for sync activity since Mail doesn't expose sync status
+    const script = buildAppLevelScriptIfRunning(`
       set accountCount to count of accounts
       set totalMailboxes to 0
       repeat with acct in accounts
@@ -107012,31 +107130,28 @@ ${actionStmts.join("\n")}
     const result = executeAppleScript(script, { timeoutMs: 6e4 });
     if (!result.success) {
       return {
-        syncDetected: false,
-        pendingUpload: 0,
-        recentActivity: false,
-        secondsSinceLastChange: -1,
-        error: result.error
+        syncState: "unavailable",
+        error: result.error || "Could not read Mail.app status"
       };
     }
-    if (result.output === "not_running") {
+    if (result.output.startsWith(MAIL_NOT_RUNNING_MARKER)) {
       return {
+        mailRunning: false,
+        syncState: "not-running",
         syncDetected: false,
-        pendingUpload: 0,
-        recentActivity: false,
-        secondsSinceLastChange: -1,
-        error: "Mail.app is not running"
+        reason: "Mail.app is not running; provider synchronization was not checked."
       };
     }
     const parts = result.output.split(FIELD_SEP);
-    const isRunning = parts[0] === "running";
-    const accountCount = parseInt(parts[1]) || 0;
+    if (parts.length !== 3 || parts[0] !== "running" || !/^\d+$/.test(parts[1]) || !/^\d+$/.test(parts[2]) || !Number.isSafeInteger(Number(parts[1])) || !Number.isSafeInteger(Number(parts[2]))) {
+      return { syncState: "unavailable", error: "Mail.app returned an invalid status observation" };
+    }
     return {
-      syncDetected: isRunning && accountCount > 0,
-      pendingUpload: 0,
-      // Not exposed by Mail.app
-      recentActivity: isRunning,
-      secondsSinceLastChange: 0
+      mailRunning: true,
+      accountCount: Number(parts[1]),
+      mailboxCount: Number(parts[2]),
+      syncState: "unknown",
+      reason: "Running state and account counts do not establish sync activity. Mail.app does not expose pending uploads or last-change timing through this check."
     };
   }
 };
@@ -107321,16 +107436,31 @@ async function readOriginal(deps, id, cfg, scope) {
     if (source.subject !== void 0) original2.subject = source.subject;
     return { original: original2, plainText: extractTextBody(source.raw) };
   }
-  const raw = scope ? deps.mail.getRawSource(id, scope, { requireScopedLocation: true }) : deps.mail.getRawSource(id);
+  let sourceScope = scope;
+  let raw;
+  if (cfg && !sourceScope) {
+    const source = deps.mail.getRawSourceWithLocation?.(id);
+    if (!source) {
+      const why = deps.mail.consumeLastMessageLookupError?.();
+      throw new Error(
+        `Cannot read the original message source${why ? ` (${why})` : ""}. Its account and mailbox must be verified before SMTP composition. Re-list the intended mailbox or supply its account and mailbox.`
+      );
+    }
+    sourceScope = { account: source.account, mailbox: source.mailbox };
+    requireScopedSmtpIdentity(deps, sourceScope, cfg);
+    raw = source.raw;
+  } else {
+    raw = sourceScope ? deps.mail.getRawSource(id, sourceScope, { requireScopedLocation: true }) : deps.mail.getRawSource(id);
+  }
   if (!raw) {
     const why = deps.mail.consumeLastMessageLookupError?.();
     throw new Error(
       `Cannot read the original message source${why ? ` (${why})` : ""}. Re-list the intended mailbox and retry with its message id.`
     );
   }
-  const content = scope ? deps.mail.getMessageContent(id, false, scope, { requireScopedLocation: true }) : deps.mail.getMessageContent(id);
+  const content = sourceScope ? deps.mail.getMessageContent(id, false, sourceScope, { requireScopedLocation: true }) : deps.mail.getMessageContent(id);
   const original = parseOriginalHeaders(raw);
-  if (scope) {
+  if (sourceScope) {
     const sourceId = original.messageId?.trim().replace(/^<|>$/g, "");
     const contentId = content?.rfcMessageId?.trim().replace(/^<|>$/g, "");
     const sameMessage = !!sourceId && sourceId === contentId;
@@ -107915,10 +108045,6 @@ function normalizeMessageId2(row) {
   const inner = raw.replace(/^<+|>+$/g, "").trim();
   return inner ? inner.toLowerCase() : void 0;
 }
-function normalizeSubjectForKey(subject) {
-  const s = typeof subject === "string" ? subject : "";
-  return s.replace(/^(\s*(re|fwd|fw|aw|sv|antw)\s*:\s*)+/i, "").replace(/\s+/g, " ").trim().toLowerCase();
-}
 function dateEpoch(row) {
   const d = row.dateReceived;
   if (d instanceof Date) return d.getTime();
@@ -107931,9 +108057,12 @@ function dateEpoch(row) {
 function dedupKey(row) {
   const mid = normalizeMessageId2(row);
   if (mid) return `mid:${mid}`;
-  const subject = normalizeSubjectForKey(row.subject);
-  const sender = (typeof row.sender === "string" ? row.sender : "").trim().toLowerCase();
-  return `k:${subject}|${sender}|${dateEpoch(row)}`;
+  const id = typeof row.id === "string" ? row.id.trim() : "";
+  if (id.startsWith("imap:")) return `id:${id}`;
+  if (/^\d+$/.test(id) && typeof row.account === "string" && row.account.length > 0 && typeof row.mailbox === "string" && row.mailbox.length > 0) {
+    return `id:${JSON.stringify([row.account, row.mailbox, id])}`;
+  }
+  return row;
 }
 function mergeMessages(imapRows, appleRows, limit, offset = 0) {
   const byKey = /* @__PURE__ */ new Map();
@@ -108105,6 +108234,9 @@ async function routeMessage(id, opts) {
   return opts.apple();
 }
 
+// src/index.ts
+init_attachmentLimits();
+
 // src/tools/doctor.ts
 init_imapClient();
 init_smtpMailer();
@@ -108231,7 +108363,16 @@ function registerResourcesAndPrompts(server2, mailManager2) {
       description: "All configured Mail accounts (name, email, enabled state).",
       mimeType: "application/json"
     },
-    (uri) => jsonResource(uri.href, mailManager2.listAccounts())
+    (uri) => {
+      const result = mailManager2.listAccountsChecked();
+      if (result.failed) {
+        throw new McpError(
+          ErrorCode.InternalError,
+          `Could not read Mail accounts: ${result.error ?? "Mail declined the request"}`
+        );
+      }
+      return jsonResource(uri.href, result.accounts);
+    }
   );
   server2.registerResource(
     "templates",
@@ -108257,7 +108398,14 @@ function registerResourcesAndPrompts(server2, mailManager2) {
     },
     (uri, variables) => {
       const account = decodeURIComponent(String(variables.account));
-      return jsonResource(uri.href, mailManager2.listMailboxes(account));
+      const result = mailManager2.listMailboxesChecked(account);
+      if (result.failed) {
+        throw new McpError(
+          ErrorCode.InternalError,
+          `Could not read mailboxes for "${account}": ${result.error ?? "Mail declined the request"}`
+        );
+      }
+      return jsonResource(uri.href, result.mailboxes);
     }
   );
   server2.registerPrompt(
@@ -108913,7 +109061,12 @@ function registerTool(name2, config2, cb) {
     const token = REFERENCES_SCHEMA.unwrap().element;
     external_exports.globalRegistry.add(token, { ...token.meta(), description: IN_REPLY_TO_SCHEMA.description });
   }
-  return registerToolWithContracts(server, name2, config2, cb);
+  return registerToolWithContracts(
+    server,
+    name2,
+    { ...config2, annotations: { ...mailToolAnnotations(name2), ...config2.annotations } },
+    cb
+  );
 }
 var mailManager = new AppleMailManager();
 registerResourcesAndPrompts(server, mailManager);
@@ -110085,7 +110238,7 @@ registerTool(
 registerTool(
   "delete-message",
   {
-    description: "Use when: deleting a single message by id (moves it to Trash).\nReturns: a confirmation that the message was deleted.\nDo not use when: deleting several at once (use batch-delete-messages) or just filing it away (use move-message).\nSafety: destructive \u2014 require explicit user confirmation, and search-messages/list-messages first to confirm you have the right id before deleting.",
+    description: "Use when: deleting a single message by id. An IMAP message outside the account's resolved Trash mailbox is moved there; one already in that Trash mailbox is permanently expunged. Numeric ids use Mail.app's delete behavior.\nReturns: a confirmation that the message was deleted.\nDo not use when: deleting several at once (use batch-delete-messages) or just filing it away (use move-message).\nSafety: destructive \u2014 an IMAP message already in Trash is permanently removed, not moved to Trash again. Require explicit user confirmation of this effect, and search-messages/list-messages first to confirm the exact message and source mailbox.",
     inputSchema: {
       id: MESSAGE_ID_SCHEMA
     },
@@ -110171,7 +110324,7 @@ var batchMutationDeps = {
 registerTool(
   "batch-delete-messages",
   {
-    description: "Use when: deleting multiple messages in one call (1\u2013100 ids; moves them to Trash).\nReturns: counts of how many were deleted and how many failed, plus the distinct reasons for any failures.\nDo not use when: deleting just one (use delete-message) or filing messages away (use batch-move-messages).\nSafety: destructive and applies to many messages at once \u2014 require explicit user confirmation, and search-messages/list-messages first to confirm every id is correct before deleting. Pass sourceMailbox/sourceAccount (the mailbox you listed the ids from) so each numeric id is pinned to that mailbox; an id that matches in several mailboxes is refused, not guessed.",
+    description: "Use when: deleting multiple messages in one call (1\u2013100 ids). IMAP messages outside their account's resolved Trash mailbox are moved there; those already in that Trash mailbox are permanently expunged. Numeric ids use Mail.app's delete behavior.\nReturns: counts of how many were deleted and how many failed, plus the distinct reasons for any failures.\nDo not use when: deleting just one (use delete-message) or filing messages away (use batch-move-messages).\nSafety: destructive and applies to many messages at once \u2014 IMAP messages already in Trash are permanently removed. Require explicit user confirmation of the effect for every source mailbox, and search-messages/list-messages first to confirm every id is correct. Pass sourceMailbox/sourceAccount (the mailbox you listed the ids from) so each numeric id is pinned to that mailbox; an id that matches in several mailboxes is refused, not guessed.",
     inputSchema: {
       ids: BATCH_IDS_SCHEMA,
       sourceMailbox: BATCH_SOURCE_MAILBOX_SCHEMA,
@@ -110402,7 +110555,7 @@ registerTool(
         return errorResponse(error63 instanceof Error ? error63.message : String(error63));
       }
       const r = await imapFetchAttachment(id, attachmentName);
-      if (!r.success || !r.base64) {
+      if (!r.success || typeof r.base64 !== "string") {
         return errorResponse(r.error || `Failed to fetch attachment "${attachmentName}"`);
       }
       writeFileSync5(target.savedPath, Buffer.from(r.base64, "base64"), { flag: "wx", mode: 384 });
@@ -110426,7 +110579,7 @@ registerTool(
 registerTool(
   "fetch-attachment",
   {
-    description: "Use when: retrieving an attachment's raw bytes inline as base64 (by message id and attachmentName), e.g. to process its contents without keeping a file.\nReturns: the attachment's bytes base64-encoded, with its size and (for IMAP) MIME type.\nDo not use when: you don't know the attachment name (use list-attachments first) or you just want it saved to disk (use save-attachment).\nSafety: leaves no file behind, but the AppleScript path is not disk-free \u2014 Mail writes the attachment into a private temp directory, which is read back and then deleted. Needs no Full Disk Access either way: Mail performs that write under the Automation grant, and this server never reads the mail store itself.",
+    description: "Use when: retrieving an attachment's raw bytes inline as base64 (by message id and attachmentName), e.g. to process its contents without keeping a file.\nReturns: up to 3 MiB of decoded attachment bytes, base64-encoded in text and structuredContent, with its size and (for IMAP) MIME type. Larger attachments are refused so the response fits the MCP stdio buffer; use save-attachment instead.\nDo not use when: you don't know the attachment name (use list-attachments first) or you want it saved to disk (use save-attachment).\nSafety: leaves no file behind, but the AppleScript path is not disk-free \u2014 Mail writes the attachment into a private temp directory, which is read back and then deleted. Needs no Full Disk Access either way: Mail performs that write under the Automation grant, and this server never reads the mail store itself.",
     inputSchema: {
       id: MESSAGE_ID_SCHEMA,
       attachmentName: external_exports.string().min(1, "Attachment name is required")
@@ -110439,28 +110592,31 @@ registerTool(
     }
   },
   withErrorHandling(async ({ id, attachmentName }) => {
-    if (id.startsWith("imap:")) {
-      const r2 = await imapFetchAttachment(id, attachmentName);
-      if (!r2.success || !r2.base64) {
-        return errorResponse(r2.error || `Failed to fetch attachment "${attachmentName}"`);
-      }
-      return successResponse(
-        `Fetched "${attachmentName}" (${r2.bytes} bytes, base64-encoded below).
-
-${r2.base64}`,
-        { attachmentName, bytes: r2.bytes, mimeType: r2.mimeType, contentBase64: r2.base64 }
-      );
+    const r = id.startsWith("imap:") ? await imapFetchAttachment(id, attachmentName, {}, MAX_FETCH_ATTACHMENT_BYTES) : mailManager.getAttachmentBase64(id, attachmentName);
+    if (!r.success || typeof r.base64 !== "string") {
+      const error63 = r.error || `Failed to fetch attachment "${attachmentName}"`;
+      return errorResponse(error63.length > 8192 ? `${error63.slice(0, 8192)}\u2026 (truncated)` : error63);
     }
-    const r = mailManager.getAttachmentBase64(id, attachmentName);
-    if (!r.success) {
-      return errorResponse(r.error || `Failed to fetch attachment "${attachmentName}"`);
+    if ((r.bytes ?? 0) > MAX_FETCH_ATTACHMENT_BYTES || r.base64.length > MAX_FETCH_ATTACHMENT_BASE64_CHARS) {
+      return errorResponse(FETCH_ATTACHMENT_TOO_LARGE);
     }
-    return successResponse(
+    const response = successResponse(
       `Fetched "${attachmentName}" (${r.bytes} bytes, base64-encoded below).
 
 ${r.base64}`,
-      { attachmentName, bytes: r.bytes, contentBase64: r.base64 }
+      {
+        attachmentName,
+        bytes: r.bytes,
+        ..."mimeType" in r ? { mimeType: r.mimeType } : {},
+        contentBase64: r.base64
+      }
     );
+    if (Buffer.byteLength(JSON.stringify(response), "utf8") > MAX_FETCH_ATTACHMENT_RESPONSE_BYTES) {
+      return errorResponse(
+        "Attachment metadata exceeds the inline response budget. Use save-attachment instead."
+      );
+    }
+    return response;
   }, "Error fetching attachment")
 );
 function appendLocalStoreRows(rows, failedAccounts) {
@@ -111469,9 +111625,14 @@ registerTool(
 registerTool(
   "get-sync-status",
   {
-    description: "Use when: checking whether Mail.app is running and actively syncing, e.g. to explain why new mail hasn't appeared yet.\nReturns: whether Mail.app is running and whether sync activity was detected.\nDo not use when: you need message counts (use get-mail-stats) or a full setup diagnosis (use doctor).",
+    description: "Use when: checking whether Mail.app is running and its configured account/mailbox counts.\nReturns: observed running state and counts, with syncState: unknown while Mail is running. This check cannot verify synchronization, pending uploads, or last-change timing; those measurements are omitted instead of guessed. It does not launch Mail.app.\nDo not use when: you need proof a message synced or was delivered, message counts (use get-mail-stats), or a full setup diagnosis (use doctor).",
     inputSchema: {},
     outputSchema: {
+      mailRunning: external_exports.boolean().optional(),
+      accountCount: external_exports.number().optional(),
+      mailboxCount: external_exports.number().optional(),
+      syncState: external_exports.enum(["unknown", "not-running", "unavailable"]).optional(),
+      reason: external_exports.string().optional(),
       syncDetected: external_exports.boolean().optional(),
       pendingUpload: external_exports.number().optional(),
       recentActivity: external_exports.boolean().optional(),
@@ -111486,9 +111647,16 @@ registerTool(
     lines.push(`\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550`);
     if (status.error) {
       lines.push(`Status: \u26A0\uFE0F ${status.error}`);
+      return errorResponse(lines.join("\n"), { ...status });
     } else {
-      lines.push(`Mail.app: ${status.recentActivity ? "Running" : "Not running"}`);
-      lines.push(`Sync active: ${status.syncDetected ? "Yes" : "No"}`);
+      lines.push(`Mail.app: ${status.mailRunning ? "Running" : "Not running"}`);
+      if (status.accountCount !== void 0)
+        lines.push(`Configured accounts: ${status.accountCount}`);
+      if (status.mailboxCount !== void 0) lines.push(`Mailboxes: ${status.mailboxCount}`);
+      lines.push(
+        status.syncState === "unknown" ? "Sync activity: unknown" : "Sync activity: Mail.app is not running"
+      );
+      if (status.reason) lines.push(status.reason);
     }
     return successResponse(lines.join("\n"), { ...status });
   }, "Error getting sync status")
