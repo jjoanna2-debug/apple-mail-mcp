@@ -33,7 +33,7 @@ import { resolve, sep, join } from "path";
 import { homedir } from "os";
 import { randomUUID } from "crypto";
 import { executeAppleScript, isPermissionDenied } from "@/utils/applescript.js";
-import { flagColorName, isGmailHost } from "@/services/imapClient.js";
+import { flagColorName, isGmailHost, MAX_UNSCOPED_SEARCH_DEPTH } from "@/services/imapClient.js";
 import { SETUP_HINT } from "@/utils/docsUrls.js";
 import { parseMimeAttachments, extractMimeAttachment, extractHtmlBody } from "@/utils/mimeParse.js";
 import { plausibleDateSent } from "@/utils/headers.js";
@@ -4091,9 +4091,9 @@ ${indent}end try${this.sanitizeFragment("_uacct", indent)}${this.sanitizeFragmen
    *   source can be MB-sized (it includes base64 attachments) and the plain-text
    *   path doesn't need it; fetching it unconditionally was both slow and, worse,
    *   returned the entire raw MIME blob mislabeled as HTML (#32).
-   * @param hint - Explicit account + mailbox (both required to take effect):
-   *   the read opens that one mailbox and, on a miss, reports "not found in
-   *   <account> / <mailbox>" without scanning anywhere else (#270).
+   * @param hint - An account narrows the read to that account. Paired with a
+   *   mailbox, the read opens only that mailbox and reports a scoped miss
+   *   without scanning anywhere else (#270).
    */
   getMessageContent(
     id: string,
@@ -4108,11 +4108,20 @@ ${indent}end try${this.sanitizeFragment("_uacct", indent)}${this.sanitizeFragmen
     }
     // Opt-in disk read (Envelope Index → .emlx): no `whose id is` lookup, which
     // times out on very large mailboxes. Any miss falls through to AppleScript.
-    // Compose explicitly requires a scoped read: the local envelope index
-    // resolves by numeric id alone and cannot prove that it belongs there.
-    // Other reads retain the existing opt-in index behavior.
+    // Ordinary scoped reads verify the account id and mailbox/label membership
+    // before opening the file. If the index can't establish scope, only the
+    // caller's scoped AppleScript lookup may answer. Composition still requires
+    // its live scoped lookup so a stale index cannot choose a compose target.
     if (isEnvelopeIndexEnabled() && /^\d+$/.test(id) && !options?.requireScopedLocation) {
-      const stored = readMessageFromStore(Number(id), { includeHtml });
+      const requestedAccount = hint?.account;
+      const accountId = requestedAccount ? this.getAccountId(requestedAccount) : null;
+      const stored =
+        requestedAccount && !accountId
+          ? { reason: "requested account id unavailable" }
+          : readMessageFromStore(Number(id), {
+              includeHtml,
+              ...(accountId ? { scope: { accountId, mailbox: hint?.mailbox } } : {}),
+            });
       if ("reason" in stored) {
         console.error(`[envelopeIndex] get ${id}: falling back to AppleScript — ${stored.reason}`);
       } else {
@@ -4274,9 +4283,11 @@ ${indent}end try${this.sanitizeFragment("_uacct", indent)}${this.sanitizeFragmen
     account?: string,
     limit = 50,
     from?: string,
-    offset = 0
+    offset = 0,
+    unreadOnly = false
   ): Message[] {
-    return this.listMessagesWithDiagnostics(mailbox, account, limit, from, offset).messages;
+    return this.listMessagesWithDiagnostics(mailbox, account, limit, from, offset, unreadOnly)
+      .messages;
   }
 
   /**
@@ -4296,10 +4307,20 @@ ${indent}end try${this.sanitizeFragment("_uacct", indent)}${this.sanitizeFragmen
     account?: string,
     limit = 50,
     from?: string,
-    offset = 0
+    offset = 0,
+    unreadOnly = false
   ): SearchResult {
-    // If no account specified, list across all accounts and merge diagnostics.
+    // Each account supplies a prefix; offset belongs to the combined chronology.
+    // Applying it independently, or stopping after the first account fills the
+    // page, can skip newer messages in a later account entirely.
     if (!account) {
+      const depth = offset + limit;
+      if (offset > 0 && depth > MAX_UNSCOPED_SEARCH_DEPTH) {
+        throw new Error(
+          "Merged account pagination supports offset + limit up to 5,000. " +
+            "Pass an explicit account and mailbox to page deeper."
+        );
+      }
       const { accounts, failed, error } = this.listAccountsChecked();
       const allMessages: Message[] = [];
       const diagnostics: SearchDiagnostics = {
@@ -4310,13 +4331,18 @@ ${indent}end try${this.sanitizeFragment("_uacct", indent)}${this.sanitizeFragmen
       };
       if (failed) noteAccountListFailure(diagnostics, error); // #346
       for (const acct of accounts) {
-        if (allMessages.length >= limit) break;
-        const remaining = limit - allMessages.length;
         // See the identical guard in searchMessagesWithDiagnostics: an
         // ambiguous-leaf throw from resolveMailbox must degrade like every
         // other per-account failure, not discard accounts already gathered.
         try {
-          const res = this.listMessagesWithDiagnostics(mailbox, acct.name, remaining, from, offset);
+          const res = this.listMessagesWithDiagnostics(
+            mailbox,
+            acct.name,
+            depth,
+            from,
+            0,
+            unreadOnly
+          );
           allMessages.push(...res.messages);
           mergeSearchDiagnostics(diagnostics, res.diagnostics);
         } catch (err) {
@@ -4325,7 +4351,8 @@ ${indent}end try${this.sanitizeFragment("_uacct", indent)}${this.sanitizeFragmen
           diagnostics.notSearchedMailboxes.push(`${acct.name} / ${mailbox ?? "*"}: ${message}`);
         }
       }
-      return { messages: allMessages.slice(0, limit), diagnostics };
+      allMessages.sort((a, b) => (b.dateReceived.getTime() || 0) - (a.dateReceived.getTime() || 0));
+      return { messages: allMessages.slice(offset, offset + limit), diagnostics };
     }
 
     // #183: the local store is addressed by its synthetic label and has no
@@ -4334,8 +4361,7 @@ ${indent}end try${this.sanitizeFragment("_uacct", indent)}${this.sanitizeFragmen
     const local = isLocalStoreLabel(account);
     const targetAccount = local ? LOCAL_STORE_LABEL : this.resolveAccount(account);
 
-    const safeFrom = from ? escapeForAppleScript(from) : "";
-    const fromFilter = from ? `whose sender contains "${safeFrom}"` : "";
+    const fromFilter = buildSearchCondition({ from, isRead: unreadOnly ? false : undefined });
     const scanThreshold = getMailboxScanThreshold();
     // What the "every mailbox" loops iterate. Inside `tell account` the bare
     // `mailboxes` binds to the account's; at application level the local branch
@@ -6458,7 +6484,10 @@ ${this.errorEmit("              ")}
   ): { success: boolean; base64?: string; bytes?: number; error?: string } {
     let dir: string | null = null;
     try {
-      dir = mkdtempSync("/private/tmp/amcp-fetch-");
+      // /tmp is an allowed root on every supported test host; resolving it
+      // retains macOS's /private/tmp identity without requiring that alias on
+      // other platforms. Never use an arbitrary TMPDIR outside the save roots.
+      dir = mkdtempSync(join(realpathSync("/tmp"), "amcp-fetch-"));
       const dest = join(dir, attachmentName.replace(/[/\\]/g, "_"));
       const ok = this.saveAttachment(id, attachmentName, dir);
       if (!ok) {

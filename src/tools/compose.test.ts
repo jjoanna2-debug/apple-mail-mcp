@@ -334,6 +334,82 @@ describe("reply and forward transport routing", () => {
     expect(result.structuredContent?.sentCopyError).toBeUndefined();
   });
 
+  it.each(["reply", "forward"] as const)(
+    "reports partial SMTP %s submission without retrying or claiming every recipient succeeded",
+    async (kind) => {
+      const d = fixture();
+      d.smtpSend.mockResolvedValue({
+        success: true,
+        messageId: "<partial@example.com>",
+        partial: true,
+        accepted: ["reply@example.com"],
+        rejected: ["teammate@example.com"],
+      });
+      const result =
+        kind === "reply"
+          ? await runReply(d, { ...args, replyAll: true })
+          : await runForward(d, {
+              id,
+              to: ["reply@example.com", "teammate@example.com"],
+              body: "For review",
+              send: true,
+            });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        ok: false,
+        sent: true,
+        partial: true,
+        accepted: ["reply@example.com"],
+        rejected: ["teammate@example.com"],
+        messageId: "<partial@example.com>",
+      });
+      expect(result.content[0].text).toContain("Partial SMTP submission");
+      expect(result.content[0].text).toContain("Do not resend to accepted recipients");
+      expect(d.smtpSend).toHaveBeenCalledOnce();
+      expectNoApple(d);
+    }
+  );
+
+  it("preserves rejected recipients in a failed SMTP reply result", async () => {
+    const d = fixture();
+    d.smtpSend.mockResolvedValue({
+      success: false,
+      error: "SMTP refused all recipients",
+      rejected: ["reply@example.com"],
+    });
+    const result = await runReply(d, args);
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      ok: false,
+      sent: false,
+      rejected: ["reply@example.com"],
+    });
+    expect(d.smtpSend).toHaveBeenCalledOnce();
+    expectNoApple(d);
+  });
+
+  it.each(["reply", "forward"] as const)(
+    "reports unknown SMTP %s submission without a sent claim, retry or AppleScript fallback",
+    async (kind) => {
+      const d = fixture();
+      d.smtpSend.mockResolvedValue({
+        success: false,
+        deliveryUnknown: true,
+        error: "Connection closed",
+      });
+      const result =
+        kind === "reply"
+          ? await runReply(d, args)
+          : await runForward(d, { id, to: ["reply@example.com"], body: "For review", send: true });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({ ok: false, deliveryUnknown: true });
+      expect(result.structuredContent?.sent).toBeUndefined();
+      expect(result.content[0].text).toContain("Do not resend automatically");
+      expect(d.smtpSend).toHaveBeenCalledOnce();
+      expectNoApple(d);
+    }
+  );
+
   it("passes through a failed Sent-copy result without failing the reply (issue #220)", async () => {
     const d = fixture();
     d.smtpSend.mockResolvedValue({
@@ -443,9 +519,9 @@ describe("reply and forward transport routing", () => {
     expectNoApple(d);
   });
 
-  it("refuses a numeric forward when Mail.app cannot return its body", async () => {
+  it("refuses a numeric forward when neither Mail.app nor MIME has readable plaintext", async () => {
     const d = fixture();
-    d.mail.getRawSource.mockReturnValue(raw);
+    d.mail.getRawSource.mockReturnValue(raw.replace("text/plain", "text/html"));
     const result = await runForward(d, {
       id: "42",
       to: ["colleague@example.com"],
@@ -545,7 +621,13 @@ describe("reply and forward transport routing", () => {
       if (mode === "returned")
         d.smtpSend.mockResolvedValue({ success: false, error: "SMTP rejected" });
       else d.smtpSend.mockRejectedValue(new Error("connection lost after DATA"));
-      expect(await runReply(d, args)).toMatchObject({ isError: true });
+      const result = await runReply(d, args);
+      if (mode === "returned") expect(result.isError).toBe(true);
+      else {
+        expect(result.isError).not.toBe(true);
+        expect(result.structuredContent?.deliveryUnknown).toBe(true);
+        expect(result.structuredContent?.sent).toBeUndefined();
+      }
       expect(d.smtpSend).toHaveBeenCalledTimes(1);
       expectNoApple(d);
     }
@@ -728,6 +810,197 @@ describe("reply and forward transport routing", () => {
 });
 
 describe("rendered SMTP reply MIME", () => {
+  it.each(['"last,first"@example.com', '"a@b"@example.com', '"a\\\\b"@example.com'])(
+    "preserves the supported quoted recipient %s in the delivery envelope",
+    async (recipient) => {
+      const d = fixture();
+      d.imapSource.mockResolvedValue({
+        raw: raw.replace("Reply-To: reply@example.com", `Reply-To: Person <${recipient}>`),
+        accountUser: cfg.user,
+      });
+      let envelope: string[] | undefined;
+      const createTransport = () => {
+        const transport = nodemailer.createTransport({ streamTransport: true, buffer: true });
+        const send = transport.sendMail.bind(transport);
+        transport.sendMail = async (options) => {
+          const info = await send(options);
+          envelope = info.envelope.to;
+          return info;
+        };
+        return transport;
+      };
+      d.smtpSend.mockImplementation((options, config) =>
+        sendViaSmtp(
+          options,
+          config,
+          createTransport as typeof nodemailer.createTransport,
+          async () => ({})
+        )
+      );
+
+      const result = await runReply(d, args);
+
+      expect(result.structuredContent?.ok).toBe(true);
+      expect(envelope).toEqual([recipient]);
+      expectNoApple(d);
+    }
+  );
+
+  it("does not reject an unsupported quoted mailbox used only as forward attribution", async () => {
+    const d = fixture();
+    d.imapSource.mockResolvedValue({
+      raw: raw.replace("From: sender@example.com", 'From: Person <"a>b"@example.com>'),
+      accountUser: cfg.user,
+    });
+
+    const result = await runForward(d, {
+      id,
+      to: ["recipient@example.com"],
+      body: "For review",
+      send: true,
+    });
+
+    expect(result.structuredContent?.ok).toBe(true);
+    expect(d.smtpSend.mock.calls[0][0].to).toEqual(["recipient@example.com"]);
+    expectNoApple(d);
+  });
+
+  it("does not reject an unsupported quoted Cc mailbox when reply-all is off", async () => {
+    const d = fixture();
+    d.imapSource.mockResolvedValue({
+      raw: raw.replace(
+        "Subject: Project update",
+        'Cc: Person <"a>b"@example.com>\r\nSubject: Project update'
+      ),
+      accountUser: cfg.user,
+    });
+
+    const result = await runReply(d, { ...args, replyAll: false });
+
+    expect(result.structuredContent?.ok).toBe(true);
+    expect(d.smtpSend.mock.calls[0][0].to).toEqual(["reply@example.com"]);
+    expect(d.smtpSend.mock.calls[0][0].cc).toBeUndefined();
+    expectNoApple(d);
+  });
+
+  it.each([
+    { header: "From", value: 'Alice <"a>b"@example.com>', replyAll: false },
+    { header: "Reply-To", value: 'Alice <"a<b"@example.com>', replyAll: false },
+    {
+      header: "To",
+      value: 'me@example.com, Alice <"a>b"@example.com>',
+      replyAll: true,
+    },
+    { header: "Cc", value: 'Alice <"a<b"@example.com>', replyAll: true },
+  ])(
+    "refuses a $header reply recipient that the SMTP composer would rewrite",
+    async ({ header, value, replyAll }) => {
+      const originalHeaders = {
+        From: "author@example.com",
+        To: "me@example.com",
+        Subject: "Recipient identity",
+        "Message-ID": "<parent@example.com>",
+        "Content-Type": "text/plain; charset=utf-8",
+        [header]: value,
+      };
+      const original =
+        Object.entries(originalHeaders)
+          .map(([name, content]) => `${name}: ${content}`)
+          .join("\r\n") + "\r\n\r\nOriginal body.";
+      const d = fixture();
+      d.imapSource.mockResolvedValue({ raw: original, accountUser: cfg.user });
+
+      const result = await runReply(d, { ...args, replyAll });
+
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.content)).toContain("cannot preserve");
+      expect(d.smtpSend).not.toHaveBeenCalled();
+      expectNoApple(d);
+    }
+  );
+
+  it.each([
+    {
+      header: "From",
+      value: '"other@example.net, Sales team" <author@example.com>',
+      replyAll: false,
+      expectedTo: ["author@example.com"],
+      expectedCc: undefined,
+    },
+    {
+      header: "Reply-To",
+      value: '"other@example.net, Sales team" <reply@example.com>',
+      replyAll: false,
+      expectedTo: ["reply@example.com"],
+      expectedCc: undefined,
+    },
+    {
+      header: "To",
+      value: 'me@example.com, "other@example.net, Sales team" <teammate@example.com>',
+      replyAll: true,
+      expectedTo: ["author@example.com"],
+      expectedCc: ["teammate@example.com"],
+    },
+    {
+      header: "Cc",
+      value: '"other@example.net, Sales team" <teammate@example.com>',
+      replyAll: true,
+      expectedTo: ["author@example.com"],
+      expectedCc: ["teammate@example.com"],
+    },
+  ])(
+    "keeps addresses in a quoted $header display name out of the delivery envelope",
+    async ({ header, value, replyAll, expectedTo, expectedCc }) => {
+      const originalHeaders = {
+        From: "author@example.com",
+        To: "me@example.com",
+        Subject: "Recipient boundary",
+        "Message-ID": "<parent@example.com>",
+        "Content-Type": "text/plain; charset=utf-8",
+        [header]: value,
+      };
+      const original =
+        Object.entries(originalHeaders)
+          .map(([name, content]) => `${name}: ${content}`)
+          .join("\r\n") + "\r\n\r\nOriginal body.";
+      const d = fixture();
+      d.imapSource.mockResolvedValue({ raw: original, accountUser: cfg.user });
+      let envelope: string[] = [];
+      let mime = "";
+      const createTransport = () => {
+        const transport = nodemailer.createTransport({ streamTransport: true, buffer: true });
+        const send = transport.sendMail.bind(transport);
+        transport.sendMail = async (options) => {
+          const info = await send(options);
+          envelope = info.envelope.to;
+          mime = info.message.toString();
+          return info;
+        };
+        return transport;
+      };
+      d.smtpSend.mockImplementation((options, config) =>
+        sendViaSmtp(
+          options,
+          config,
+          createTransport as typeof nodemailer.createTransport,
+          async () => ({})
+        )
+      );
+
+      const result = await runReply(d, { ...args, replyAll });
+
+      expect(result.structuredContent?.ok).toBe(true);
+      expect(envelope).toEqual([...expectedTo, ...(expectedCc ?? [])]);
+      const headers = mime.split(/\r?\n\r?\n/)[0].replace(/\r?\n[ \t]+/g, " ");
+      expect(headers).toContain(`To: ${expectedTo.join(", ")}`);
+      if (expectedCc) expect(headers).toContain(`Cc: ${expectedCc.join(", ")}`);
+      expect(headers).not.toContain("other@example.net");
+      expect(headers).toContain("In-Reply-To: <parent@example.com>");
+      expect(extractTextBody(mime)).toContain("> Original body.");
+      expectNoApple(d);
+    }
+  );
+
   it("keeps new paragraphs unquoted and carries the full parent chain on the wire", async () => {
     const d = fixture();
     let mime = "";

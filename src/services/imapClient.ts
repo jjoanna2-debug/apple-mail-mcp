@@ -925,6 +925,10 @@ export interface ImapListResult {
   messages: Record<string, unknown>[];
   count: number;
   partial: boolean;
+  /** Whether a wider prefix may reveal additional matches. Internal merge
+   * pagination uses this instead of assuming a deduplicated short page is
+   * exhausted. A partial read always leaves this possibility open. */
+  hasMore: boolean;
   /** Mailboxes omitted from an unscoped IMAP search because SELECT/SEARCH failed. */
   failedMailboxes: string[];
   /** The underlying error text for each entry in `failedMailboxes`, keyed by the
@@ -1649,6 +1653,7 @@ async function run(
       const omittedMessages: OmittedMessage[] = [];
       let totalMatched = 0;
       let totalExact = true;
+      let hasMore = false;
 
       const timedOutMailboxes: string[] = [];
       for (const [index, path] of paths.entries()) {
@@ -1677,6 +1682,7 @@ async function run(
           const result = outcome;
           totalMatched += result.total;
           totalExact &&= result.totalExact;
+          hasMore ||= !result.totalExact || result.total > page.skip + page.take;
           fetched.push(...result.messages.map((message) => ({ message, path })));
           for (const uid of result.omitted) {
             omittedMessages.push({
@@ -1716,6 +1722,7 @@ async function run(
           const key = messageIdentity(entry);
           if (!unique.has(key)) unique.set(key, entry);
         }
+        hasMore ||= unique.size > offset + limit;
         ordered = [...unique.values()].slice(offset, offset + limit);
       }
 
@@ -1756,6 +1763,7 @@ async function run(
           messages,
           count: 0,
           partial,
+          hasMore: hasMore || partial,
           failedMailboxes,
           failedMailboxReasons,
           omittedMessages,
@@ -1773,6 +1781,7 @@ async function run(
         messages,
         count: messages.length,
         partial,
+        hasMore: hasMore || partial,
         failedMailboxes,
         failedMailboxReasons,
         omittedMessages,
